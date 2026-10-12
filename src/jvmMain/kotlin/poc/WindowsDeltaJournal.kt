@@ -58,9 +58,8 @@ class WindowsDeltaJournal(private val directory: Path, private val protector: Dp
             .setPermissions(*AclEntryPermission.values()).build())
     }
     override fun load(): RecoveryEdit? {
-        if (!Files.exists(file, LinkOption.NOFOLLOW_LINKS)) return null
-        check(Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS) && Files.size(file) <= 131072)
-        val plain = protector.transform(Files.readAllBytes(file), false)
+        val encrypted = readEncrypted(file) ?: return null
+        val plain = protector.transform(encrypted, false)
         try {
             DataInputStream(ByteArrayInputStream(plain)).use {
                 val version = it.readInt()
@@ -105,9 +104,8 @@ class WindowsDeltaJournal(private val directory: Path, private val protector: Dp
         writeProtected(floorFile, buffer.toByteArray())
     }
     private fun readFloors(): Map<DatasetIdentity, Long> {
-        if (!Files.exists(floorFile, LinkOption.NOFOLLOW_LINKS)) return emptyMap()
-        check(Files.isRegularFile(floorFile, LinkOption.NOFOLLOW_LINKS) && Files.size(floorFile) <= 131072)
-        val plain = protector.transform(Files.readAllBytes(floorFile), false)
+        val encrypted = readEncrypted(floorFile) ?: return emptyMap()
+        val plain = protector.transform(encrypted, false)
         try {
             DataInputStream(ByteArrayInputStream(plain)).use { input ->
                 check(input.readInt() == 0x45414631) { "Unsupported revision floor version" }
@@ -141,4 +139,11 @@ class WindowsDeltaJournal(private val directory: Path, private val protector: Dp
         }
     }
     override fun clear() { Files.deleteIfExists(file) }
+    private fun readEncrypted(path: Path): ByteArray? {
+        val attributes = try { Files.readAttributes(path, BasicFileAttributes::class.java, LinkOption.NOFOLLOW_LINKS) }
+        catch (_: NoSuchFileException) { return null }
+        // Access denied and other IO errors are not equivalent to an absent history file.
+        check(attributes.isRegularFile && attributes.size() <= 131072)
+        return Files.readAllBytes(path).also { check(it.size <= 131072) }
+    }
 }
