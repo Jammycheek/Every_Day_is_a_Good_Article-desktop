@@ -25,3 +25,12 @@ USB-mode switching, disconnect during transfer, denied access, multiple devices,
 
 ## Reference
 https://learn.microsoft.com/en-us/windows/win32/api/cfgmgr32/nf-cfgmgr32-cm_get_device_interface_propertyw
+
+## Idle disconnect / reconnect
+The user unplugged and reconnected the phone between independent read-only probe invocations.
+- Before unplug: 1 WPD device, both USB checks true, WPD Open successful.
+- After unplug: 0 WPD devices, probe exit 0.
+- After reconnect/unlock/file-transfer selection: 1 WPD device, both USB checks true, WPD Open successful, driver protocol MTP: 1.00, probe exit 0.
+- The local transport selector happened to remain unchanged. It is not trusted as application identity, nor assumed stable across other reconnects.
+
+This confirms point-in-time re-enumeration around an idle disconnect, not continuous event detection, detection latency, an in-flight transfer failure or Android session invalidation/recovery. The native probe is deliberately independent of the synthetic SessionGate. No new file writes occurred in this test.
