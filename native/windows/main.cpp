@@ -3,6 +3,8 @@
 #include <portabledevice.h>
 #include <wrl/client.h>
 #include <cfgmgr32.h>
+#include <initguid.h>
+#include <devpkey.h>
 #include <bcrypt.h>
 #include <iostream>
 #include <vector>
@@ -56,7 +58,18 @@ ComPtr<IPortableDeviceValues> properties(IPortableDeviceContent* content, PCWSTR
 }
 bool usbAncestor(const std::wstring& id) {
     DEVINST node;
-    if (CM_Locate_DevNodeW(&node, const_cast<PWSTR>(id.c_str()), CM_LOCATE_DEVNODE_NORMAL) != CR_SUCCESS) return false;
+    if (CM_Locate_DevNodeW(&node, const_cast<PWSTR>(id.c_str()), CM_LOCATE_DEVNODE_NORMAL) != CR_SUCCESS) {
+        // WPD GetDevices returns interface symbolic links on many phones, not devnode instance IDs.
+        WCHAR instance[MAX_DEVICE_ID_LEN] = {};
+        DEVPROPTYPE type = 0;
+        ULONG size = sizeof(instance);
+        CONFIGRET result = CM_Get_Device_Interface_PropertyW(id.c_str(), &DEVPKEY_Device_InstanceId,
+            &type, reinterpret_cast<PBYTE>(instance), &size, 0);
+        if (result != CR_SUCCESS || type != DEVPROP_TYPE_STRING || size < sizeof(WCHAR)
+            || size > sizeof(instance) || size % sizeof(WCHAR) != 0
+            || instance[size / sizeof(WCHAR) - 1] != L'\\0' || instance[0] == L'\\0') return false;
+        if (CM_Locate_DevNodeW(&node, instance, CM_LOCATE_DEVNODE_NORMAL) != CR_SUCCESS) return false;
+    }
     for (int depth = 0; depth < 16; ++depth) {
         WCHAR buffer[MAX_DEVICE_ID_LEN] = {};
         if (CM_Get_Device_IDW(node, buffer, MAX_DEVICE_ID_LEN, 0) != CR_SUCCESS) return false;
@@ -219,6 +232,7 @@ void roundtrip(PCWSTR id, PCWSTR parent, bool empty) {
     // No delete API. The user removes this uniquely named synthetic file manually.
 }
 void selfTest() {
+    if (usbAncestor(L"EveryArticle-invalid-device-selector")) throw std::runtime_error("Invalid selector accepted");
     for (size_t size : {size_t(0), size_t(1), MAX_BYTES}) {
         std::vector<unsigned char> expected(size, 0x5a);
         ComPtr<IStream> memory;
