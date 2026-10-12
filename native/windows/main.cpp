@@ -237,7 +237,17 @@ void roundtrip(PCWSTR id, PCWSTR parent, bool empty, bool slow = false) {
     LocalOutput() << L"roundtrip-verified=1\nbytes=" << bytes.size() << L"\nsha256=" << sha256(returned) << L"\n";
     // No delete API. The user removes this uniquely named synthetic file manually.
 }
+// Binary unprotect status, separate key-state hints from data rejection.
+int rejectionStatus(DWORD error) {
+    if (error == ERROR_INVALID_DATA || error == ERROR_INVALID_PARAMETER || error == NTE_BAD_DATA) return 3;
+    if (error == NTE_BAD_KEY_STATE || error == NTE_BAD_KEYSET) return 4;
+    return 1; // resource/unknown failures are operational, not evidence of corrupt data
+}
 void selfTest() {
+    if (rejectionStatus(ERROR_INVALID_DATA) != 3 || rejectionStatus(static_cast<DWORD>(NTE_BAD_DATA)) != 3 ||
+        rejectionStatus(static_cast<DWORD>(NTE_BAD_KEY_STATE)) != 4 || rejectionStatus(static_cast<DWORD>(NTE_BAD_KEYSET)) != 4 ||
+        rejectionStatus(ERROR_INVALID_PARAMETER) != 3 || rejectionStatus(ERROR_ACCESS_DENIED) != 1)
+        throw std::runtime_error("Protection status classification failed");
     if (usbAncestor(L"EveryArticle-invalid-device-selector")) throw std::runtime_error("Invalid selector accepted");
     for (size_t size : {size_t(0), size_t(1), MAX_BYTES}) {
         std::vector<unsigned char> expected(size, 0x5a);
@@ -267,7 +277,7 @@ void selfTest() {
     LocalOutput() << L"self-test=passed\n";
 }
 // Binary pipe only: recovery payloads never appear in console arguments or diagnostic logs.
-struct DecryptionRejected {};
+struct DecryptionRejected { int status; };
 void protectPipe(bool encrypt) {
     std::vector<BYTE> input;
     BYTE chunk[4096];
@@ -291,9 +301,8 @@ void protectPipe(bool encrypt) {
     SecureZeroMemory(input.data(), input.size());
     if (!success) {
         // Dedicated status only for known data/key rejection, never helper/pipe/resource failure.
-        if (!encrypt && (error == ERROR_INVALID_DATA || error == ERROR_INVALID_PARAMETER ||
-            error == NTE_BAD_DATA || error == NTE_BAD_KEY_STATE || error == NTE_BAD_KEYSET))
-            throw DecryptionRejected{};
+        if (!encrypt && rejectionStatus(error) != 1)
+            throw DecryptionRejected{rejectionStatus(error)};
         checked(HRESULT_FROM_WIN32(error));
     }
     struct ProtectedBuffer {
@@ -333,8 +342,8 @@ int wmain(int argc, wchar_t** argv) {
             if (slowMode && std::wstring(argv[5]) != L"64k") throw std::runtime_error("Slow mode requires 64k");
             roundtrip(argv[2], argv[3], std::wstring(argv[5]) == L"empty", slowMode);
         } else { std::wcerr << L"Invalid command. See docs/WINDOWS-PROBE.md\n"; result = 2; }
-    } catch (const DecryptionRejected&) {
-        result = 3; // Binary unprotect protocol: completed input, rejected ciphertext/key, no output.
+    } catch (const DecryptionRejected& rejection) {
+        result = rejection.status; // Completed input and no output: 3=data rejection, 4=key-state hint.
     } catch (HRESULT hr) {
         std::wcerr << L"error-hresult=" << std::hex << static_cast<unsigned long>(hr) << L"\n"; result = 1;
     } catch (const std::exception& e) {

@@ -9,11 +9,13 @@ import kotlin.test.*
 /** Test-only pipe peer; no device access and no production fault switches. */
 object ProtectionFailureFixture {
     @JvmStatic fun main(args: Array<String>) {
+        if (args[0] == "early-key-reject") kotlin.system.exitProcess(4)
         if (args[0] == "early-reject") kotlin.system.exitProcess(3)
         System.`in`.readBytes()
         when (args[0]) {
             "exit1" -> kotlin.system.exitProcess(1)
             "reject" -> kotlin.system.exitProcess(3)
+            "key-reject" -> kotlin.system.exitProcess(4)
             "timeout" -> Thread.sleep(30000)
             "empty" -> Unit
             "mismatch" -> System.out.write(byteArrayOf(1))

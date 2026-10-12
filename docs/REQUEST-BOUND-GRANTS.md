@@ -28,7 +28,7 @@ Acquisition requires an epoch strictly greater than the saved maximum; renewal r
 
 ### Legacy migration and compatibility
 
-EAF1 floors and EAE1 `grant-epochs.dpapi` are read together until the first successful EAF2 write. Missing legacy values remain absent; epoch-only identities are preserved. Both legacy files must validate before migration, and the union must fit the shared bound. The EAF2 replacement becomes authoritative, and retained legacy epoch ciphertext is never imported again. It is retained for manual inspection rather than silently deleted. Older binaries cannot read EAF2; do not run them against this directory. Deliberate file restoration/deletion and malicious same-user code remain outside the protection.
+EAF1 floors and EAE1 `grant-epochs.dpapi` are read together until the first successful EAF2 write. Missing legacy values remain absent; epoch-only identities are preserved. Both legacy files must validate before migration, and the union must fit the shared bound. Before EAF2 replacement, a persistent migration marker disables legacy fallback; after success the old epoch file is renamed outside automatic read candidates. Ciphertext is retained. Interrupted migration and missing combined history require explicit recovery/baseline; see REVIEW-PENDING-QUARANTINE.md. Older binaries cannot read EAF2; do not run them against this directory. Deliberate file restoration/deletion and malicious same-user code remain outside the protection.
 
 ### Confirmed recovery
 
@@ -46,8 +46,8 @@ Normal and explicit baseline acceptance share all protocol checks; only local ad
 
 ## Remaining issues
 
-1. T2: unreadable pending journals/key loss still have no confirmed quarantine/export exit. Pending discard cannot preview unreadable content. Resolve before real-data use.
-2. T1 follow-up now gates history quarantine on a fresh current-environment protect/unprotect canary, also rechecked on confirmation; see REVIEW-DPAPI-ENVIRONMENT.md. Success cannot prove historical-key availability or file integrity. Q1 legacy epoch resurrection remains open.
+1. T2 follow-up provides confirmed unreadable-pending quarantine and ciphertext export, preserving bytes; this abandons local replay rather than restoring the edit. Real UI, peer/status authentication and actual key recovery remain unfinished. See REVIEW-PENDING-QUARANTINE.md.
+2. T1 follow-up now gates history quarantine on a fresh current-environment protect/unprotect canary, also rechecked on confirmation; see REVIEW-DPAPI-ENVIRONMENT.md. Success cannot prove historical-key availability or file integrity. U1 reason hints and Q1 legacy-reimport prevention are implemented in the protected-pending follow-up.
 3. Private peer authentication, all-writer epoch fencing, incarnation lifecycle, authoritative duration semantics, apply/status crash consistency and operation submission state remain requirements.
 4. OS sleep/resume, helper-induced tick delay, actual power loss, long-term retention and S2 warning scope/clear policy remain unverified or undecided. Shared capacity is 256; there is no automatic eviction. Long.MAX_VALUE epoch exhaustion requires confirmed recovery or a corrected authoritative incarnation.
 

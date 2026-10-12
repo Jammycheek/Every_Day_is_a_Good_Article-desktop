@@ -2,6 +2,8 @@ package poc
 
 /** Process-local one-use capability, not proof of user consent or peer authentication. */
 class HistoryRecoveryConfirmation internal constructor()
+enum class RecoveryFailureReason { DATA_REJECTED, KEY_STATE, INVALID_FORMAT, LEGACY_REIMPORT_BLOCKED, MIXED }
+
 enum class HistoryRecoveryKind { FORGET_IDENTITY, QUARANTINE_ALL }
 data class HistoryRecoveryPreview(
     val kind: HistoryRecoveryKind,
@@ -9,7 +11,9 @@ data class HistoryRecoveryPreview(
     val previousFloor: Long?,
     val confirmation: HistoryRecoveryConfirmation,
     val previousEpoch: Long? = null,
-    val consequence: String = "Forget revision and epoch history: older revisions and generations may be accepted after explicit rebaseline."
+    val consequence: String = "Forget revision and epoch history: older revisions and generations may be accepted after explicit rebaseline.",
+    val reason: RecoveryFailureReason? = null,
+    val guidance: String = "Before quarantining, check the previous password and Windows account/key recovery options; the original ciphertext is retained."
 )
 data class VerifiedHistoryEntry(val revisionFloor: Long?, val epoch: Long?)
 
