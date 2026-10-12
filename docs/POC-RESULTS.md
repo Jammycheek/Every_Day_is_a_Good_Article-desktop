@@ -27,7 +27,7 @@ Work remains on poc/usb-mtp-session-preparation and draft PR #1. Main remains at
 ## Remaining risks and next work
 1. Define the private Android session contract: application identity, authoritative revision, lock/grant/renew/expiry/revoke, idempotent operation status and applied acknowledgement. Review the proposed boundary before private implementation; do not publish Android-specific source or real data here.
 2. Test interruption during journal encryption/replacement separately. Completed-save process termination does not establish power-loss durability. Windows reboot and power loss remain untested; orphan encrypted temporary files need a future explicit retention/recovery policy.
-3. Address multi-process exclusion, retention, rapid unplug/replug missed by polling and production timing policy. Denied access, multiple physical devices and other phones remain unverified on hardware.
+3. The R2 follow-up implements exclusive Windows recovery-directory ownership (see REVIEW-DIRECTORY-OWNERSHIP.md). Address history recovery/retention, rapid unplug/replug missed by polling and production timing policy. Denied access, multiple physical devices and other phones remain unverified on hardware.
 4. Build the Compose diagnostic UI with independent transport/session/pending states after the core boundary is agreed. No Compose UI exists yet. macOS/Linux need transport and protected-storage adapters.
 
 The next recommended phase is private session-contract review, not enabling real-data editing. Lost applied acknowledgements must be resolved by querying Android operation status before any retry. Local DPAPI/ACL protection does not address same-user malware or every memory copy.

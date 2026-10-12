@@ -17,7 +17,7 @@ Pending candidates and applied receipts must match the incarnation. Version-2 co
 | --- | --- | --- |
 | Floor read/parse/decryption fails | Existing files retained | New grant rejected; session suspended |
 | Floor save fails before pending clear | Pending retained | Reconciliation fails; no editing |
-| Floor saved, pending clear fails or process stops | New floor plus pending may remain | Matching applied outcome can be queried/reconciled again; floor never decreases |
+| Floor saved, pending clear fails or process stops | New floor plus pending may remain | Matching applied outcome can be queried/reconciled again; floor never decreases with one cooperating locked owner |
 | Pending clear succeeds | Floor remains after pending removal | Older grants rejected across process restart |
 
 ## Windows storage and compatibility
@@ -32,5 +32,5 @@ Windows CI passed all 47 Kotlin tests, native tests, the three-JVM recovery/floo
 
 ## Remaining limits
 N4 now implements preview-bound confirmed local discard, including readable unbound legacy records. Its actual confirmation UI, encrypted export, rebase and unreadable-record recovery remain unimplemented; see REVIEW-PENDING-DISCARD.md. Generated unique operation IDs, submitted state/epoch, authoritative dataset lifecycle, authenticated status queries and request-bound duration leases remain open. The floor is a local defensive check, not a substitute for fresh authenticated grants or phone-side revision/fencing checks.
-Storage still assumes one serialized writer; inter-process exclusion remains unresolved. This is ordinary process persistence, not a power-loss or full anti-rollback guarantee. Deliberately deleting/restoring older protected history, account/key loss and malicious same-user access are outside this protection. No automatic floor pruning/reset is provided; retention must be designed with authoritative operation-status retention.
+WindowsDeltaJournal now enforces one cooperating owner per recovery directory with a lifetime OS file lock; see REVIEW-DIRECTORY-OWNERSHIP.md. Controller callbacks remain serialized. Monotonic max requires this ownership protocol and does not cover external history replacement or old unlocked binaries. This is ordinary process persistence, not a power-loss or full anti-rollback guarantee. Deliberately deleting/restoring older protected history, account/key loss and malicious same-user access are outside this protection. No automatic floor pruning/reset is provided; retention must be designed with authoritative operation-status retention.
 No Android source, real data, phone writes or main merge are included.

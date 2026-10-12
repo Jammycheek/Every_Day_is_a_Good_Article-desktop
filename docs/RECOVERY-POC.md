@@ -13,7 +13,7 @@ RecoveryController receives explicit transport observations and mock grants/appl
 - preparePendingDiscard / cancelPendingDiscard / discardPending provide a one-use preview-bound local abandonment path for readable pending edits after explicit caller-enforced user confirmation. Changed or stale confirmations cannot delete another edit. Successful discard suspends editing and retains revision floors; a fresh grant and snapshot are still required. It does not cancel phone processing. No actual confirmation UI, export or rebase exists; see REVIEW-PENDING-DISCARD.md.
 
 WindowsDeltaJournal uses the helper's binary protect/unprotect pipe with user-scope DPAPI (no machine scope), an owner-only ACL and a forced encrypted temporary file followed by atomic move. No plaintext file, console payload or command argument is used.
-Calls are serialized and there is one writer. Each string is bounded to 4096 UTF-8 bytes; this is a one-operation synthetic record, not a journal of application documents.
+WindowsDeltaJournal owns an exclusive journal.lock for its lifetime; a second cooperating process/instance is rejected before journal access. Stop/suspend the serialized controller before closing storage. The persistent lock file must not be deleted as cleanup; see REVIEW-DIRECTORY-OWNERSHIP.md. Each string is bounded to 4096 UTF-8 bytes; this is a one-operation synthetic record, not a journal of application documents.
 Unpaired UTF-16 surrogates are rejected before persistence or digest encoding, including on legacy journal load. New EAP2 records contain dataset incarnation; EAP1 records remain readable but unbound and are not automatically migrated. Production digest canonicalization must be specified over bytes rather than copied from this string fixture.
 Verified revision floors are persisted by application identity/incarnation before grant acceptance returns and before an applied pending edit is cleared. Older grants are rejected after restart. See REVIEW-REVISION-FLOOR.md for format, ordering and limits.
 The same Windows user typically restores data; Windows account/profile loss is outside this PoC. Admin/same-user malware is not addressed by these measures.
@@ -24,7 +24,7 @@ Windows JVM integration tests use the actual native DPAPI helper for deltas, flo
 Build the native helper, set POC_HELPER to its absolute path, then run gradle jvmTest. CI does this in Windows. All test data is synthetic.
 
 ## Limits
-Normal process restart and forced termination after completed save were locally verified with synthetic data. Interruption during save, Windows reboot and power loss remain untested. No directory fsync guarantee, multi-process locking, retention policy, secure erasure of JVM strings, Android identity authentication or idempotent apply-status query is implemented.
+Normal process restart and forced termination after completed save were locally verified with synthetic data. Interruption during save, Windows reboot and power loss remain untested. No directory fsync guarantee, history recovery/retention policy, secure erasure of JVM strings, Android identity authentication or idempotent apply-status query is implemented.
 Zeroing only affects the controller-owned byte array; JVM/native copies may remain.
 Crash after phone application but before journal deletion can leave an already-applied pending operation; private Android integration MUST query operation status before replay.
 A crash can leave an encrypted temporary file. It is not silently promoted or deleted at startup.
