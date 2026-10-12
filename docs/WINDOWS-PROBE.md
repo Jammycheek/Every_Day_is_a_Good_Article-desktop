@@ -37,3 +37,9 @@ A fresh read-only Open does not prove write capability. roundtrip-verified prove
 Each process has a 30-second hard deadline (exit 124). On failure/timeout no success is emitted. A write can leave a partial synthetic file; inspect the dedicated folder manually. Never retry automatically.
 Test unplug during transfer, USB-mode switch, lock-screen, access denial, multiple devices. Preserve errors as errors, not disconnected or success.
 No Android edits/real data, snapshot ingestion, encryption, durable recovery or session integration in this helper.
+
+## Download and exit status
+The successful Windows CI run publishes wpd-probe-windows-x64 (7-day retention), containing the executable and this guide. Build it locally when artifacts expire.
+Treat a test as successful only when BOTH roundtrip-verified=1 and exit code 0 are present. Timeout/other nonzero exit means failure even if earlier progress was printed.
+Device output uses Unicode on a Windows console and UTF-8 when redirected.
+The local agent runtime is currently blocked by the MXC E: launcher error; do not connect a phone until a local execution path is ready and the user is notified.

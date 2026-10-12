@@ -11,8 +11,28 @@
 #include <thread>
 #include <chrono>
 #include <algorithm>
+#include <sstream>
 using Microsoft::WRL::ComPtr;
 constexpr size_t MAX_BYTES = 65536;
+// Wide console output, UTF-8 when redirected. Do not depend on the user's code page.
+struct LocalOutput {
+    std::wostringstream buffer;
+    template<class T> LocalOutput& operator<<(T value) { buffer << value; return *this; }
+    ~LocalOutput() {
+        auto wide = buffer.str();
+        DWORD mode = 0;
+        HANDLE handle = GetStdHandle(STD_OUTPUT_HANDLE);
+        if (GetConsoleMode(handle, &mode)) {
+            DWORD written = 0;
+            WriteConsoleW(handle, wide.data(), static_cast<DWORD>(wide.size()), &written, nullptr);
+        } else {
+            int count = WideCharToMultiByte(CP_UTF8, 0, wide.data(), static_cast<int>(wide.size()), nullptr, 0, nullptr, nullptr);
+            std::string utf8(count, '\0');
+            WideCharToMultiByte(CP_UTF8, 0, wide.data(), static_cast<int>(wide.size()), utf8.data(), count, nullptr, nullptr);
+            std::cout << utf8 << std::flush;
+        }
+    }
+};
 void checked(HRESULT hr) { if (FAILED(hr)) throw hr; }
 template<class T> ComPtr<T> make(REFCLSID clsid) {
     ComPtr<T> value;
@@ -82,21 +102,21 @@ void devices() {
     } values;
     values.ids.resize(count);
     if (count) checked(manager->GetDevices(values.ids.data(), &count));
-    std::wcout << L"wpd-device-count=" << count << L"\n";
+    LocalOutput() << L"wpd-device-count=" << count << L"\n";
     for (DWORD i = 0; i < count; ++i) {
         std::wstring id = values.ids.at(i);
         // IDs are local selectors only. Do not upload this output to public issue/CI logs.
-        std::wcout << L"device-id=" << id << L"\nusb-pnp-ancestor=" << usbAncestor(id) << L"\n";
+        LocalOutput() << L"device-id=" << id << L"\nusb-pnp-ancestor=" << usbAncestor(id) << L"\n";
         try {
             Device d(id.c_str(), false);
             auto props = properties(d.content.Get(), WPD_DEVICE_OBJECT_ID);
-            std::wcout << L"wpd-open=1\nusb-declared=" << declaredUsb(d.content.Get()) << L"\n";
+            LocalOutput() << L"wpd-open=1\nusb-declared=" << declaredUsb(d.content.Get()) << L"\n";
             Text protocol;
             if (SUCCEEDED(props->GetStringValue(WPD_DEVICE_PROTOCOL, &protocol.value)))
-                std::wcout << L"reported-protocol=" << protocol.str() << L"\n";
-            else std::wcout << L"reported-protocol=unknown\n";
+                LocalOutput() << L"reported-protocol=" << protocol.str() << L"\n";
+            else LocalOutput() << L"reported-protocol=unknown\n";
         } catch (HRESULT hr) {
-            std::wcout << L"wpd-open=0\nerror-hresult=" << std::hex << static_cast<unsigned long>(hr) << std::dec << L"\n";
+            LocalOutput() << L"wpd-open=0\nerror-hresult=" << std::hex << static_cast<unsigned long>(hr) << std::dec << L"\n";
         }
     }
 }
@@ -110,10 +130,10 @@ void children(IPortableDeviceContent* content, PCWSTR parent) {
         auto props = properties(content, id.value);
         GUID type = {};
         checked(props->GetGuidValue(WPD_OBJECT_CONTENT_TYPE, &type));
-        std::wcout << L"object-id=" << id.str() << L"\nname=" << text(props.Get(), WPD_OBJECT_NAME)
+        LocalOutput() << L"object-id=" << id.str() << L"\nname=" << text(props.Get(), WPD_OBJECT_NAME)
                    << L"\nfolder=" << IsEqualGUID(type, WPD_CONTENT_TYPE_FOLDER) << L"\n";
     }
-    std::wcout << L"listing-limit-reached=1\n";
+    LocalOutput() << L"listing-limit-reached=1\n";
 }
 std::vector<unsigned char> readBounded(IStream* stream) {
     std::vector<unsigned char> bytes;
@@ -187,7 +207,7 @@ void roundtrip(PCWSTR id, PCWSTR parent, bool empty) {
     checked(output.As(&data));
     Text created;
     checked(data->GetObjectID(&created.value));
-    std::wcout << L"created-object-id=" << created.str() << L"\ncreated-name=" << filename << L"\n";
+    LocalOutput() << L"created-object-id=" << created.str() << L"\ncreated-name=" << filename << L"\n";
     data.Reset(); output.Reset();
     ComPtr<IPortableDeviceResources> resources;
     checked(d.content->Transfer(&resources));
@@ -195,7 +215,7 @@ void roundtrip(PCWSTR id, PCWSTR parent, bool empty) {
     checked(resources->GetStream(created.value, WPD_RESOURCE_DEFAULT, STGM_READ, &optimal, &input));
     auto returned = readBounded(input.Get());
     verify(bytes, returned);
-    std::wcout << L"roundtrip-verified=1\nbytes=" << bytes.size() << L"\nsha256=" << sha256(returned) << L"\n";
+    LocalOutput() << L"roundtrip-verified=1\nbytes=" << bytes.size() << L"\nsha256=" << sha256(returned) << L"\n";
     // No delete API. The user removes this uniquely named synthetic file manually.
 }
 void selfTest() {
@@ -224,7 +244,7 @@ void selfTest() {
     try { readBounded(oversized.Get()); } catch (const std::runtime_error&) { rejected = true; }
     if (!rejected) throw std::runtime_error("Oversized read accepted");
     if (sha256({}) != L"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855") throw std::runtime_error("SHA-256 failed");
-    std::wcout << L"self-test=passed\n";
+    LocalOutput() << L"self-test=passed\n";
 }
 int wmain(int argc, wchar_t** argv) {
     if (argc < 2) return 2;

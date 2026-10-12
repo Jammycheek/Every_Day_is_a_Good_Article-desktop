@@ -22,3 +22,11 @@ jobs:
       - run: cmake --build build/native --config Release
       - run: ctest --test-dir build/native -C Release --output-on-failure
       - run: gradle --no-daemon runWindowsProbe -PprobeCommand=self-test
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wpd-probe-windows-x64
+          path: |
+            build/native/Release/wpd-probe.exe
+            docs/WINDOWS-PROBE.md
+          if-no-files-found: error
+          retention-days: 7
