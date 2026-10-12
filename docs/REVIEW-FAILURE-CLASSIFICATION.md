@@ -5,6 +5,7 @@ PR #1 ends with S1 and documentation for S2/S3. No confirmation UI, authenticati
 ## S1: distinguish operational failure from rejected/invalid data
 
 The old quarantine preview treated every read exception as damaged history. It now propagates operational failures and offers no preview, warning, rename or reset. The controller suspends editing on a failed read. Pending-journal reads use the same failure categories, but gain no quarantine API.
+Prototype consumers that catch specific parsing exceptions must now handle StorageFormatException (the original parsing cause is retained). No journal encoding, digest, lease or recovery-token schema changes.
 
 | Failure | Result | Quarantine preview |
 | --- | --- | --- |

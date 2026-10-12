@@ -143,8 +143,8 @@ class WindowsDeltaJournalTest {
             val encrypted = protector.transform(buffer.toByteArray(), true)
             val file = directory.resolve("pending.dpapi")
             Files.write(file, encrypted)
-            assertFailsWith<IllegalArgumentException> { pc.pending }
-            assertFailsWith<IllegalArgumentException> { pc.preparePendingDiscard() }
+            assertIs<IllegalArgumentException>(assertFailsWith<StorageFormatException> { pc.pending }.cause)
+            assertIs<IllegalArgumentException>(assertFailsWith<StorageFormatException> { pc.preparePendingDiscard() }.cause)
             assertFalse(pc.canEdit(1)); assertFalse(pc.hasSnapshot)
             assertContentEquals(encrypted, Files.readAllBytes(file))
         } finally {
