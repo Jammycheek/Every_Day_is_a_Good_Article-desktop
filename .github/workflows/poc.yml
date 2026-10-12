@@ -17,10 +17,14 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.12.1'
-      - run: gradle --no-daemon jvmTest
       - run: cmake -S native/windows -B build/native -A x64
       - run: cmake --build build/native --config Release
       - run: ctest --test-dir build/native -C Release --output-on-failure
+      - name: Session and encrypted recovery tests
+        shell: pwsh
+        run: |
+          $env:POC_HELPER = Join-Path $PWD 'build/native/Release/wpd-probe.exe'
+          gradle --no-daemon jvmTest
       - run: gradle --no-daemon runWindowsProbe -PprobeCommand=self-test
       - uses: actions/upload-artifact@v4
         with:

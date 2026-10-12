@@ -6,6 +6,7 @@
 #include <initguid.h>
 #include <devpkey.h>
 #include <bcrypt.h>
+#include <dpapi.h>
 #include <iostream>
 #include <vector>
 #include <string>
@@ -265,6 +266,43 @@ void selfTest() {
     if (sha256({}) != L"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855") throw std::runtime_error("SHA-256 failed");
     LocalOutput() << L"self-test=passed\n";
 }
+// Binary pipe only: recovery payloads never appear in console arguments or diagnostic logs.
+void protectPipe(bool encrypt) {
+    std::vector<BYTE> input;
+    BYTE chunk[4096];
+    DWORD count = 0;
+    for (;;) {
+        if (!ReadFile(GetStdHandle(STD_INPUT_HANDLE), chunk, sizeof(chunk), &count, nullptr)) {
+            if (GetLastError() == ERROR_BROKEN_PIPE) break;
+            checked(HRESULT_FROM_WIN32(GetLastError()));
+        }
+        if (!count) break;
+        if (input.size() + count > 131072) throw std::runtime_error("Recovery input too large");
+        input.insert(input.end(), chunk, chunk + count);
+    }
+    if (input.empty()) throw std::runtime_error("Recovery input missing");
+    DATA_BLOB source = {static_cast<DWORD>(input.size()), input.data()};
+    DATA_BLOB output = {};
+    BOOL success = encrypt
+        ? CryptProtectData(&source, L"EveryArticle PoC delta", nullptr, nullptr, nullptr, CRYPTPROTECT_UI_FORBIDDEN, &output)
+        : CryptUnprotectData(&source, nullptr, nullptr, nullptr, nullptr, CRYPTPROTECT_UI_FORBIDDEN, &output);
+    DWORD error = GetLastError();
+    SecureZeroMemory(input.data(), input.size());
+    if (!success) checked(HRESULT_FROM_WIN32(error));
+    struct ProtectedBuffer {
+        DATA_BLOB& blob;
+        ~ProtectedBuffer() { SecureZeroMemory(blob.pbData, blob.cbData); LocalFree(blob.pbData); }
+    } cleanup{output};
+    if (!output.cbData || output.cbData > 131072) throw std::runtime_error("Recovery output invalid");
+    DWORD offset = 0;
+    while (offset < output.cbData) {
+        DWORD written = 0;
+        if (!WriteFile(GetStdHandle(STD_OUTPUT_HANDLE), output.pbData + offset, output.cbData - offset, &written, nullptr))
+            checked(HRESULT_FROM_WIN32(GetLastError()));
+        if (!written) throw std::runtime_error("Recovery output incomplete");
+        offset += written;
+    }
+}
 int wmain(int argc, wchar_t** argv) {
     if (argc < 2) return 2;
     // Hard process deadline also covers a blocked COM call. It cannot roll back remote writes.
@@ -278,7 +316,8 @@ int wmain(int argc, wchar_t** argv) {
     int result = 0;
     try {
         std::wstring command = argv[1];
-        if (command == L"self-test" && argc == 2) selfTest();
+        if ((command == L"protect" || command == L"unprotect") && argc == 2) protectPipe(command == L"protect");
+        else if (command == L"self-test" && argc == 2) selfTest();
         else if (command == L"devices" && argc == 2) devices();
         else if (command == L"children" && argc == 4) {
             Device d(argv[2], false); children(d.content.Get(), argv[3]);
