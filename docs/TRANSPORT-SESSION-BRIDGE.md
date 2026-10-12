@@ -6,6 +6,7 @@ Only one event loop owns the controller/coordinator. A separate worker probes at
 This is polling, not native plug-and-play event subscription; it can miss a sufficiently fast disconnect/reconnect when the selector does not change. Android session identity/lease checks remain required.
 
 ## Interactive mock-session fixture
+Use the rebuilt current jar/helper and a fresh synthetic journal directory for incarnation-aware fixtures. They explicitly use fake-dataset-v1. Historical version-1 journals have no incarnation and are preserved without automatic assignment; do not delete old evidence to make a fixture run. See REVIEW-REVISION-FLOOR.md.
 TransportMonitorSmoke <helper.exe> <local-private-journal-directory> <10..120 seconds> --mock-session
 On first ready transport ONLY, the explicitly named fixture seeds a fake grant, snapshot and synthetic delta. Production code never does this. Disconnect revokes editing/releases snapshot; reconnect only restores transport, not a grant. Pending data stays protected locally. The fixture never writes phone files or acknowledges/replays its delta.
 Log output contains enum/boolean state only. Use a dedicated build directory and do not run this hardware fixture in public CI. Lease and journal tests in CI use fake transport reports.

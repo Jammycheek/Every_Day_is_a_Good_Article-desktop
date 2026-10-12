@@ -6,6 +6,7 @@ Windows WPD/DPAPI helper and planned Compose Multiplatform UI. The phone remains
 - [PoC results and remaining work](docs/POC-RESULTS.md)
 - [Application session contract proposal](docs/SESSION-CONTRACT-PROPOSAL.md)
 - [Review follow-up: applied receipt reconciliation](docs/REVIEW-RECONCILIATION.md)
+- [Review follow-up: persisted revision floors](docs/REVIEW-REVISION-FLOOR.md)
 - [Windows probe guide](docs/WINDOWS-PROBE.md)
 - [Real-phone hardware evidence](docs/HARDWARE-VALIDATION.md)
 - [PC synthetic recovery](docs/RECOVERY-POC.md)
@@ -22,5 +23,5 @@ native device events and rapid reconnect coverage, retention/multi-process polic
 No production synchronization or real-data safety claim.
 
 JDK 17 + Gradle 8.12.1. Build native helper first, set POC_HELPER to its absolute path, run `gradle jvmTest`.
-`gradle runRecoveryRestartSmoke` verifies a synthetic delta across two separate JVM processes.
+`gradle runRecoveryRestartSmoke` verifies a synthetic delta and retained revision floor across three separate JVM processes.
 See Windows guide for local hardware commands. Do not publish raw device identifiers or directory listings.

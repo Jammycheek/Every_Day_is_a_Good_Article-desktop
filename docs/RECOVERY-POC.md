@@ -6,19 +6,20 @@ RecoveryController receives explicit transport observations and mock grants/appl
 - Save one synthetic delta before reporting it staged.
 - Disconnect, explicit suspension, or lease expiry tick zeroes/releases the controller's owned snapshot byte array and invalidates the session.
 - Reconnection alone cannot grant editing rights.
-- Restart reads only the encrypted delta, never a full snapshot or editing grant.
-- Recovery candidate must match application identity and base revision; no automatic retransmission.
+- Restart reads the encrypted delta and verified revision floors, never a full snapshot or editing grant.
+- Recovery candidate must match application identity, dataset incarnation and base revision; no automatic retransmission.
 - reconcileApplied returns CLEARED / NO_PENDING / NOT_THIS_OPERATION / CONFLICT. It clears only for a pre-authenticated receipt matching persisted identity, base revision, operation and digest, with an advanced result revision. No pending edit or unrelated identity/operation leaves the active session unchanged. A same-operation conflict, read failure or matching clear attempt suspends editing. It requires neither transport nor an editing lease and never enables editing.
 - Corrupted/unreadable journals raise errors and remain on disk.
 
 WindowsDeltaJournal uses the helper's binary protect/unprotect pipe with user-scope DPAPI (no machine scope), an owner-only ACL and a forced encrypted temporary file followed by atomic move. No plaintext file, console payload or command argument is used.
 Calls are serialized and there is one writer. Each string is bounded to 4096 UTF-8 bytes; this is a one-operation synthetic record, not a journal of application documents.
-Unpaired UTF-16 surrogates are rejected before persistence or digest encoding, including on legacy journal load. The modified-UTF-8 journal format is unchanged for valid strings; production digest canonicalization must be specified over bytes rather than copied from this string fixture.
+Unpaired UTF-16 surrogates are rejected before persistence or digest encoding, including on legacy journal load. New EAP2 records contain dataset incarnation; EAP1 records remain readable but unbound and are not automatically migrated. Production digest canonicalization must be specified over bytes rather than copied from this string fixture.
+Verified revision floors are persisted by application identity/incarnation before grant acceptance returns and before an applied pending edit is cleared. Older grants are rejected after restart. See REVIEW-REVISION-FLOOR.md for format, ordering and limits.
 The same Windows user typically restores data; Windows account/profile loss is outside this PoC. Admin/same-user malware is not addressed by these measures.
 
 ## Verification
 Common tests cover detach, expiry, restart, wrong identity/revision, persistence failure, mismatched/duplicate applied receipts, clear/read failure and lost acknowledgement after revision advance.
-Windows JVM integration test uses the actual native DPAPI helper, writes a synthetic delta, reconstructs the controller/store, checks identity, clears via a matching mock applied receipt without a lease and tests corruption rejection. The separate-JVM smoke reconciles revision 5 -> 6 before acquiring a new revision-6 grant.
+Windows JVM integration tests use the actual native DPAPI helper for deltas, floors, corruption and legacy retention. The three-JVM smoke seeds revision 5, reconciles 5 -> 6, then verifies older-grant rejection from a new JVM.
 Build the native helper, set POC_HELPER to its absolute path, then run gradle jvmTest. CI does this in Windows. All test data is synthetic.
 
 ## Limits
