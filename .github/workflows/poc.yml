@@ -1,4 +1,4 @@
-name: Synthetic session tests
+name: PoC Windows checks
 on:
   push:
     branches: ['poc/**']
@@ -18,3 +18,6 @@ jobs:
         with:
           gradle-version: '8.12.1'
       - run: gradle --no-daemon jvmTest
+      - run: cmake -S native/windows -B build/native -A x64
+      - run: cmake --build build/native --config Release
+      - run: ctest --test-dir build/native -C Release --output-on-failure
