@@ -21,7 +21,7 @@ Real-phone synthetic transfer passed after the user created and confirmed an emp
 - Both used uniquely named new files with a Unicode filename suffix, and emitted roundtrip-verified=1.
 - No existing phone files were modified or deleted. Two synthetic files remain in the dedicated folder for manual cleanup.
 - Transfer success is transport evidence only, not Android application apply/commit or editing-lock evidence.
-USB-mode switching, disconnect during transfer, denied access, multiple devices, screen locking, and private Android session integration remain unverified. Detection success does not prove any of those behaviors.
+Later sections record USB-mode switching, interrupted transfer and screen-lock observations. Multiple devices, explicit access denial and private Android session integration remain unverified on hardware.
 
 ## Reference
 https://learn.microsoft.com/en-us/windows/win32/api/cfgmgr32/nf-cfgmgr32-cm_get_device_interface_propertyw
@@ -66,3 +66,14 @@ The user locked the phone, unplugged USB, and reconnected without unlocking.
 - No device Open or storage enumeration could be attempted; no files were read or written.
 
 This differs from locking after file-transfer access had been established, where device/metadata access remained available. The observation is limited to this phone and its current USB settings; it does not establish whether the cause was lock policy, USB-mode reset, or another device policy. WPD absence is not proof of cable disconnection. After unlocking without unplugging, the user reported that the USB mode was charging only. The user then changed it to file transfer. Fresh enumeration returned 1 device, both USB checks true, WPD Open successful, protocol MTP: 1.00; DEVICE child enumeration returned 1 object, exit 0. Thus the zero-device observation is confounded by USB mode and cannot establish lock-only denial. Reboot-before-first-unlock remains untested. No file reads/writes were performed in these checks.
+
+## Live transport / PC mock-session bridge
+Code 8f86a1021b0647f42a034398b18a4b6546b067b1, Windows CI-built helper and Kotlin CLI, explicit --mock-session fixture. CI passed 25 Kotlin tests, native tests and separate-JVM recovery smoke.
+The fixture creates a mock grant and synthetic PC snapshot only on its initial ready observation; it does not implement an Android grant or lock.
+Within a single running monitor, the user unplugged and then reconnected the phone with file-transfer access restored:
+- Initially: USB_MTP_READY, mock-can-edit=true, snapshot=true, pending=true.
+- After unplug: NONE, mock-can-edit=false, snapshot=false, pending=true.
+- After reconnect: USB_MTP_READY, mock-can-edit=false, snapshot=false, pending=true.
+- The local encrypted pending.dpapi file remained present (338 bytes); no plaintext payload or device identifiers are included here.
+
+This demonstrates real WPD polling driving PC mock-session revocation and snapshot release, without automatic renewal on reconnect. The monitor did not write phone files or apply/acknowledge the synthetic delta. A preceding monitor expired normally before reconnect, so that run is not used as evidence of same-process reconnect behavior. Polling can miss a brief unplug/replug between samples, and detection latency was not measured. Actual Android editing lock, authenticated grant renewal and application-level recovery remain unverified.

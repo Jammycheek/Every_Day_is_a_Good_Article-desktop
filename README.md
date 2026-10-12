@@ -6,14 +6,16 @@ Windows WPD/DPAPI helper and planned Compose Multiplatform UI. The phone remains
 - [Windows probe guide](docs/WINDOWS-PROBE.md)
 - [Real-phone hardware evidence](docs/HARDWARE-VALIDATION.md)
 - [PC synthetic recovery](docs/RECOVERY-POC.md)
+- [Transport/session bridge](docs/TRANSPORT-SESSION-BRIDGE.md)
 
 Implemented: bounded synthetic WPD roundtrip, USB evidence, explicit lease gate,
 PC snapshot release and encrypted one-operation delta recovery. Reconnection alone never grants editing.
+The polling bridge revokes PC mock-session permission on observed transport loss; live unplug/reconnect verified no automatic renewal.
 Real-phone transfer, USB-mode changes, idle reconnect and interruption/recovery have been tested on one phone.
 DPAPI recovery tests use synthetic data only; no Android source or application data is included.
 
 Remaining: authenticated private Android session/ack channel, actual app lock, production data schema,
-automatic WPD-to-controller/event-loop integration, retention/multi-process policy, Compose UI and macOS/Linux adapters.
+native device events and rapid reconnect coverage, retention/multi-process policy, Compose UI and macOS/Linux adapters.
 No production synchronization or real-data safety claim.
 
 JDK 17 + Gradle 8.12.1. Build native helper first, set POC_HELPER to its absolute path, run `gradle jvmTest`.
