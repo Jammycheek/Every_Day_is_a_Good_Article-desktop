@@ -9,7 +9,7 @@ sealed interface ProbeCommand {
     data object SelfTest : ProbeCommand
     data object Devices : ProbeCommand
     data class Children(val device: String, val parent: String) : ProbeCommand
-    data class RoundTrip(val device: String, val folder: String, val empty: Boolean) : ProbeCommand
+    data class RoundTrip(val device: String, val folder: String, val empty: Boolean, val slow: Boolean = false) : ProbeCommand
 }
 sealed interface ProbeResult {
     data object Completed : ProbeResult
@@ -27,14 +27,15 @@ class WindowsProbe(private val executable: Path) {
             ProbeCommand.SelfTest -> listOf("self-test")
             ProbeCommand.Devices -> listOf("devices")
             is ProbeCommand.Children -> listOf("children", command.device, command.parent)
-            is ProbeCommand.RoundTrip -> listOf("roundtrip", command.device, command.folder,
+            is ProbeCommand.RoundTrip -> listOf(if (command.slow) "roundtrip-slow" else "roundtrip", command.device, command.folder,
                 "--synthetic-write", if (command.empty) "empty" else "64k")
         }
         require(args.all { it.isNotBlank() && '\u0000' !in it })
         // No command shell or interpolation. Inherited IO keeps selectors on the local console.
         val process = ProcessBuilder(listOf(path.toString()) + args).inheritIO().start()
         try {
-            if (!process.waitFor(35, TimeUnit.SECONDS)) {
+            val deadline = if (command is ProbeCommand.RoundTrip && command.slow) 95L else 35L
+            if (!process.waitFor(deadline, TimeUnit.SECONDS)) {
                 process.destroyForcibly()
                 check(process.waitFor(5, TimeUnit.SECONDS)) { "Helper termination failed" }
                 return ProbeResult.TimedOut
@@ -56,9 +57,10 @@ fun main(args: Array<String>) {
         "self-test" -> { require(args.size == 2); ProbeCommand.SelfTest }
         "devices" -> { require(args.size == 2); ProbeCommand.Devices }
         "children" -> { require(args.size == 4); ProbeCommand.Children(args[2], args[3]) }
-        "roundtrip" -> {
+        "roundtrip", "roundtrip-slow" -> {
             require(args.size == 6 && args[4] == "--synthetic-write" && args[5] in listOf("empty", "64k"))
-            ProbeCommand.RoundTrip(args[2], args[3], args[5] == "empty")
+            require(args[1] != "roundtrip-slow" || args[5] == "64k")
+            ProbeCommand.RoundTrip(args[2], args[3], args[5] == "empty", args[1] == "roundtrip-slow")
         }
         else -> error("Unknown command")
     }
