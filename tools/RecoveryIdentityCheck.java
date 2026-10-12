@@ -12,7 +12,8 @@ class RecoveryIdentityCheck {
     public static void main(String[] args) throws Exception {
         Path helper = Path.of(args[0]), directory = Path.of(args[1]);
         byte[] before = Files.readAllBytes(directory.resolve("pending.dpapi"));
-        RecoveryController pc = new RecoveryController(new WindowsDeltaJournal(directory, new DpapiProtector(helper)));
+        try (WindowsDeltaJournal journal = new WindowsDeltaJournal(directory, new DpapiProtector(helper))) {
+        RecoveryController pc = new RecoveryController(journal);
         RecoveryEdit expected = new RecoveryEdit(new PendingEdit("fake-monitor-phone", 1, "fake-monitor-op", "fake-dataset-v1"), "SYNTHETIC-MONITOR-DELTA");
         if (!expected.equals(pc.getPending())) throw new IllegalStateException("Requires known synthetic journal");
         TransportCoordinator link = new TransportCoordinator(pc, 3000);

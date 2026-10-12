@@ -6,7 +6,8 @@ class CrashHoldSmoke {
     static long now() { return System.nanoTime() / 1_000_000; }
     public static void main(String[] args) throws Exception {
         Path helper = Path.of(args[0]);
-        RecoveryController pc = new RecoveryController(new WindowsDeltaJournal(Path.of(args[1]), new DpapiProtector(helper)));
+        try (WindowsDeltaJournal journal = new WindowsDeltaJournal(Path.of(args[1]), new DpapiProtector(helper))) {
+        RecoveryController pc = new RecoveryController(journal);
         if (pc.getPending() != null) throw new IllegalStateException("Use a fresh synthetic journal directory");
         TransportCoordinator link = new TransportCoordinator(pc, 3000);
         long started = now();

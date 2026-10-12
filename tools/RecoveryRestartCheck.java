@@ -6,7 +6,8 @@ class RecoveryRestartCheck {
     static long now() { return System.nanoTime() / 1_000_000; }
     public static void main(String[] args) {
         Path helper = Path.of(args[0]);
-        RecoveryController pc = new RecoveryController(new WindowsDeltaJournal(Path.of(args[1]), new DpapiProtector(helper)));
+        try (WindowsDeltaJournal journal = new WindowsDeltaJournal(Path.of(args[1]), new DpapiProtector(helper))) {
+        RecoveryController pc = new RecoveryController(journal);
         RecoveryEdit expected = new RecoveryEdit(new PendingEdit("fake-monitor-phone", 1, "fake-monitor-op", "fake-dataset-v1"), "SYNTHETIC-MONITOR-DELTA");
         if (!expected.equals(pc.getPending()) || pc.canEdit(now()) || pc.getHasSnapshot())
             throw new IllegalStateException("Unexpected restart state");

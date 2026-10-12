@@ -6,12 +6,16 @@ import java.io.ByteArrayOutputStream
 import java.io.DataOutputStream
 
 class WindowsDeltaJournalTest {
+    private val ownedJournals = mutableListOf<WindowsDeltaJournal>()
+    private fun openJournal(directory: Path, protector: DpapiProtector) =
+        WindowsDeltaJournal(directory, protector).also { ownedJournals.add(it) }
+    private fun closeJournals() { ownedJournals.forEach { it.close() }; ownedJournals.clear() }
     @Test fun confirmedDiscardDeletesOnlyPendingAndRetainsExactProtectedFloorAcrossRestart() {
         val helper = System.getenv("POC_HELPER") ?: error("POC_HELPER must point to the built Windows helper")
         val directory = Files.createTempDirectory("ea-poc-discard-test")
         try {
             val protector = DpapiProtector(Path.of(helper))
-            val journal = WindowsDeltaJournal(directory, protector)
+            val journal = openJournal(directory, protector)
             val identity = DatasetIdentity("fake-phone", "fake-dataset-v1")
             journal.recordAppliedRevision(identity, 8)
             journal.save(RecoveryEdit(PendingEdit("fake-phone", 7, "fake-op", "fake-dataset-v1"), "SYNTHETIC-DISCARD"))
@@ -24,11 +28,13 @@ class WindowsDeltaJournalTest {
             assertEquals(PendingDiscardResult.DISCARDED, pc.discardPending(preview.confirmation))
             assertFalse(Files.exists(directory.resolve("pending.dpapi")))
             assertContentEquals(floorBytes, Files.readAllBytes(floorFile))
-            val restarted = RecoveryController(WindowsDeltaJournal(directory, protector)); restarted.observeTransport(true)
+            journal.close()
+            val restarted = RecoveryController(openJournal(directory, protector)); restarted.observeTransport(true)
             assertFailsWith<IllegalStateException> { restarted.acceptGrant(Grant("fake-phone", "stale", 7, 100, "fake-dataset-v1"), 0) }
             restarted.acceptGrant(Grant("fake-phone", "fresh", 8, 100, "fake-dataset-v1"), 0)
             assertTrue(restarted.canEdit(0)); assertFalse(restarted.hasSnapshot)
         } finally {
+            closeJournals()
             Files.newDirectoryStream(directory).use { files -> files.forEach { Files.deleteIfExists(it) } }
             Files.deleteIfExists(directory)
         }
@@ -39,13 +45,14 @@ class WindowsDeltaJournalTest {
         val directory = Files.createTempDirectory("ea-poc-floor-test")
         try {
             val protector = DpapiProtector(Path.of(helper))
-            val journal = WindowsDeltaJournal(directory, protector)
+            val journal = openJournal(directory, protector)
             val a = DatasetIdentity("fake-phone", "fake-dataset-v1")
             val b = DatasetIdentity("fake-phone", "fake-dataset-v2")
             journal.recordAppliedRevision(a, 8); journal.recordAppliedRevision(a, 10)
             journal.recordAppliedRevision(a, 9); journal.recordAppliedRevision(b, 1)
             journal.clear()
-            val restartedStore = WindowsDeltaJournal(directory, protector)
+            journal.close()
+            val restartedStore = openJournal(directory, protector)
             assertEquals(10L, restartedStore.revisionFloor(a)); assertEquals(1L, restartedStore.revisionFloor(b))
             val encrypted = Files.readAllBytes(directory.resolve("revision-floors.dpapi"))
             assertFalse(String(encrypted, Charsets.ISO_8859_1).contains("fake-dataset-v1"))
@@ -55,6 +62,7 @@ class WindowsDeltaJournalTest {
             pc.acceptGrant(Grant("fake-phone", "fresh", 10, 100, "fake-dataset-v1"), 0)
             assertTrue(pc.canEdit(0)); assertFalse(pc.hasSnapshot)
         } finally {
+            closeJournals()
             Files.newDirectoryStream(directory).use { files -> files.forEach { Files.deleteIfExists(it) } }
             Files.deleteIfExists(directory)
         }
@@ -65,7 +73,7 @@ class WindowsDeltaJournalTest {
         val directory = Files.createTempDirectory("ea-poc-floor-corrupt-test")
         try {
             val protector = DpapiProtector(Path.of(helper))
-            val journal = WindowsDeltaJournal(directory, protector)
+            val journal = openJournal(directory, protector)
             journal.recordAppliedRevision(DatasetIdentity("fake-phone", "fake-dataset-v1"), 8)
             val pc = RecoveryController(journal); pc.observeTransport(true)
             pc.acceptGrant(Grant("fake-phone", "s1", 8, 100, "fake-dataset-v1"), 0)
@@ -77,6 +85,7 @@ class WindowsDeltaJournalTest {
             assertFalse(pc.canEdit(1)); assertFalse(pc.hasSnapshot)
             assertContentEquals(damaged, Files.readAllBytes(file))
         } finally {
+            closeJournals()
             Files.newDirectoryStream(directory).use { files -> files.forEach { Files.deleteIfExists(it) } }
             Files.deleteIfExists(directory)
         }
@@ -87,7 +96,7 @@ class WindowsDeltaJournalTest {
         val directory = Files.createTempDirectory("ea-poc-legacy-test")
         try {
             val protector = DpapiProtector(Path.of(helper))
-            val journal = WindowsDeltaJournal(directory, protector)
+            val journal = openJournal(directory, protector)
             val buffer = ByteArrayOutputStream()
             DataOutputStream(buffer).use {
                 it.writeInt(0x45415031); it.writeUTF("fake-phone"); it.writeLong(7)
@@ -112,6 +121,7 @@ class WindowsDeltaJournalTest {
             pc.acceptGrant(Grant("fake-phone", "new", 8, 100, "fake-dataset-v1"), 0)
             assertTrue(pc.canEdit(0)); assertFalse(pc.hasSnapshot)
         } finally {
+            closeJournals()
             Files.newDirectoryStream(directory).use { files -> files.forEach { Files.deleteIfExists(it) } }
             Files.deleteIfExists(directory)
         }
@@ -122,7 +132,7 @@ class WindowsDeltaJournalTest {
         val directory = Files.createTempDirectory("ea-poc-malformed-test")
         try {
             val protector = DpapiProtector(Path.of(helper))
-            val pc = RecoveryController(WindowsDeltaJournal(directory, protector))
+            val pc = RecoveryController(openJournal(directory, protector))
             pc.observeTransport(true); pc.acceptGrant(Grant("fake-phone", "s1", 7, 100, "fake-dataset-v1"), 0)
             pc.loadSyntheticSnapshot(byteArrayOf(1), 0)
             val buffer = ByteArrayOutputStream()
@@ -138,6 +148,7 @@ class WindowsDeltaJournalTest {
             assertFalse(pc.canEdit(1)); assertFalse(pc.hasSnapshot)
             assertContentEquals(encrypted, Files.readAllBytes(file))
         } finally {
+            closeJournals()
             Files.newDirectoryStream(directory).use { files -> files.forEach { Files.deleteIfExists(it) } }
             Files.deleteIfExists(directory)
         }
@@ -148,7 +159,7 @@ class WindowsDeltaJournalTest {
         val directory = Files.createTempDirectory("ea-poc-recovery-test")
         try {
             val protector = DpapiProtector(Path.of(helper))
-            val journal = WindowsDeltaJournal(directory, protector)
+            val journal = openJournal(directory, protector)
             val pc = RecoveryController(journal)
             pc.observeTransport(true); pc.acceptGrant(Grant("fake-phone", "s1", 7, 100, "fake-dataset-v1"), 0)
             pc.loadSyntheticSnapshot(byteArrayOf(42), 0)
@@ -158,7 +169,9 @@ class WindowsDeltaJournalTest {
             assertFalse(String(encrypted, Charsets.ISO_8859_1).contains("SYNTHETIC-SECRET-DELTA"))
             val entries = Files.getFileAttributeView(directory.resolve("pending.dpapi"), AclFileAttributeView::class.java).acl
             assertEquals(1, entries.size)
-            val restarted = RecoveryController(WindowsDeltaJournal(directory, protector))
+            journal.close()
+            val restartedStore = openJournal(directory, protector)
+            val restarted = RecoveryController(restartedStore)
             assertFalse(restarted.hasSnapshot); assertFalse(restarted.canEdit(2))
             assertEquals("SYNTHETIC-SECRET-DELTA", restarted.recoveryCandidate("fake-phone", 7, "fake-dataset-v1")?.syntheticDelta)
             assertFailsWith<IllegalStateException> { restarted.recoveryCandidate("different", 7, "fake-dataset-v1") }
@@ -169,13 +182,15 @@ class WindowsDeltaJournalTest {
             assertFalse(restarted.canEdit(102)); assertFalse(restarted.hasSnapshot)
             restarted.observeTransport(true); restarted.acceptGrant(Grant("fake-phone", "s2", 8, 200, "fake-dataset-v1"), 103)
             restarted.suspendSession()
-            journal.save(RecoveryEdit(PendingEdit("fake-phone", 7, "fake-op", "fake-dataset-v1"), "SYNTHETIC-SECRET-DELTA"))
+            restartedStore.save(RecoveryEdit(PendingEdit("fake-phone", 7, "fake-op", "fake-dataset-v1"), "SYNTHETIC-SECRET-DELTA"))
             val damaged = Files.readAllBytes(directory.resolve("pending.dpapi"))
             damaged[damaged.lastIndex] = (damaged.last().toInt() xor 0xff).toByte()
             Files.write(directory.resolve("pending.dpapi"), damaged)
-            assertFails { WindowsDeltaJournal(directory, protector).load() }
+            restartedStore.close()
+            assertFails { openJournal(directory, protector).load() }
             assertTrue(Files.exists(directory.resolve("pending.dpapi"))) // do not discard unreadable recovery
         } finally {
+            closeJournals()
             Files.newDirectoryStream(directory).use { files -> files.forEach { Files.deleteIfExists(it) } }
             Files.deleteIfExists(directory)
         }

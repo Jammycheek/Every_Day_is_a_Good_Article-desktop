@@ -12,9 +12,10 @@ class CorruptJournalCheck {
         Files.createDirectories(copiesRoot);
         byte[] originalBytes = Files.readAllBytes(original);
         Path disposable = Files.createTempDirectory(copiesRoot, "corrupt-journal-");
-        WindowsDeltaJournal journal = new WindowsDeltaJournal(disposable, new DpapiProtector(helper));
+        try (WindowsDeltaJournal journal = new WindowsDeltaJournal(disposable, new DpapiProtector(helper));
+             WindowsDeltaJournal sourceJournal = new WindowsDeltaJournal(Path.of(args[1]), new DpapiProtector(helper))) {
         RecoveryEdit expected = new RecoveryEdit(new PendingEdit("fake-monitor-phone", 1, "fake-monitor-op", "fake-dataset-v1"), "SYNTHETIC-MONITOR-DELTA");
-        RecoveryEdit source = new WindowsDeltaJournal(Path.of(args[1]), new DpapiProtector(helper)).load();
+        RecoveryEdit source = sourceJournal.load();
         if (!expected.equals(source)) throw new IllegalStateException("Source must be the synthetic fixture");
         journal.save(source); // New encrypted copy with the journal's owner-only ACL.
         RecoveryController pc = new RecoveryController(journal);

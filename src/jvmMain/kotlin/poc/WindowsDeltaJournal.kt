@@ -3,6 +3,8 @@ package poc
 import java.io.*
 import java.nio.ByteBuffer
 import java.nio.channels.FileChannel
+import java.nio.channels.FileLock
+import java.nio.channels.OverlappingFileLockException
 import java.nio.file.*
 import java.nio.file.attribute.*
 import java.util.concurrent.*
@@ -41,14 +43,45 @@ class DpapiProtector(private val helper: Path) {
     }
 }
 
-/** One synthetic operation, one local writer. Not a production storage/retention policy. */
-class WindowsDeltaJournal(private val directory: Path, private val protector: DpapiProtector) : DeltaJournal {
+class JournalInUseException : IllegalStateException("Recovery directory is already in use")
+
+/** Owns one recovery directory until close/process exit. Callers must still serialize controller calls. */
+class WindowsDeltaJournal(private val directory: Path, private val protector: DpapiProtector) : DeltaJournal, AutoCloseable {
     private val file = directory.resolve("pending.dpapi")
     private val floorFile = directory.resolve("revision-floors.dpapi")
+    private val lockChannel: FileChannel
+    private val directoryLock: FileLock
+    private var closed = false
     init {
         Files.createDirectories(directory)
         check(!Files.isSymbolicLink(directory))
-        restrict(directory)
+        val channel = FileChannel.open(directory.resolve("journal.lock"),
+            StandardOpenOption.CREATE, StandardOpenOption.WRITE, LinkOption.NOFOLLOW_LINKS)
+        try {
+            val lock = try { channel.tryLock() } catch (_: OverlappingFileLockException) { null }
+                ?: throw JournalInUseException()
+            try {
+                restrict(directory)
+                restrict(directory.resolve("journal.lock"))
+            } catch (failure: Exception) {
+                lock.release()
+                throw failure
+            }
+            lockChannel = channel
+            directoryLock = lock
+        } catch (failure: Exception) {
+            channel.close()
+            throw failure
+        }
+    }
+    private fun requireOwnership() {
+        check(!closed && lockChannel.isOpen && directoryLock.isValid) { "Recovery directory ownership is closed or lost" }
+    }
+    @Synchronized override fun close() {
+        if (closed) return
+        closed = true
+        try { directoryLock.release() } finally { lockChannel.close() }
+        // Never unlink the lock file: replacing its file identity could create two lock owners.
     }
     private fun restrict(path: Path) {
         val view = Files.getFileAttributeView(path, AclFileAttributeView::class.java)
@@ -57,7 +90,8 @@ class WindowsDeltaJournal(private val directory: Path, private val protector: Dp
         view.acl = listOf(AclEntry.newBuilder().setType(AclEntryType.ALLOW).setPrincipal(owner)
             .setPermissions(*AclEntryPermission.values()).build())
     }
-    override fun load(): RecoveryEdit? {
+    @Synchronized override fun load(): RecoveryEdit? {
+        requireOwnership()
         val encrypted = readEncrypted(file) ?: return null
         val plain = protector.transform(encrypted, false)
         try {
@@ -72,7 +106,8 @@ class WindowsDeltaJournal(private val directory: Path, private val protector: Dp
             }
         } finally { plain.fill(0) }
     }
-    override fun save(edit: RecoveryEdit) {
+    @Synchronized override fun save(edit: RecoveryEdit) {
+        requireOwnership()
         check(load() == null) { "Pending operation already exists" }
         val instance = requireNotNull(edit.metadata.datasetInstance) { "Legacy identity requires explicit resolution" }
         val fields = listOf(edit.metadata.device, instance, edit.metadata.operation, edit.syntheticDelta)
@@ -85,8 +120,12 @@ class WindowsDeltaJournal(private val directory: Path, private val protector: Dp
         }
         writeProtected(file, buffer.toByteArray())
     }
-    override fun revisionFloor(identity: DatasetIdentity): Long? = readFloors()[identity]
-    override fun recordAppliedRevision(identity: DatasetIdentity, revision: Long) {
+    @Synchronized override fun revisionFloor(identity: DatasetIdentity): Long? {
+        requireOwnership()
+        return readFloors()[identity]
+    }
+    @Synchronized override fun recordAppliedRevision(identity: DatasetIdentity, revision: Long) {
+        requireOwnership()
         require(revision >= 0)
         val floors = readFloors().toMutableMap()
         val previous = floors[identity]
@@ -138,7 +177,7 @@ class WindowsDeltaJournal(private val directory: Path, private val protector: Dp
             Files.deleteIfExists(temporary)
         }
     }
-    override fun clear() { Files.deleteIfExists(file) }
+    @Synchronized override fun clear() { requireOwnership(); Files.deleteIfExists(file) }
     private fun readEncrypted(path: Path): ByteArray? {
         val attributes = try { Files.readAttributes(path, BasicFileAttributes::class.java, LinkOption.NOFOLLOW_LINKS) }
         catch (_: NoSuchFileException) { return null }
