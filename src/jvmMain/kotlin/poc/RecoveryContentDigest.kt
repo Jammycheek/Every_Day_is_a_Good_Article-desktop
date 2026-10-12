@@ -6,6 +6,9 @@ import java.security.MessageDigest
 
 /** Versioned, length-prefixed UTF-8 fields and big-endian revision; avoids concatenation ambiguity. */
 internal actual fun recoveryContentDigest(metadata: PendingEdit, syntheticDelta: String): String {
+    requireWellFormedUtf16(metadata.device)
+    requireWellFormedUtf16(metadata.operation)
+    requireWellFormedUtf16(syntheticDelta)
     val buffer = ByteArrayOutputStream()
     DataOutputStream(buffer).use { output ->
         fun field(value: String) {

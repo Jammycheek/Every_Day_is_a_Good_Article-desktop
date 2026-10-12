@@ -64,7 +64,8 @@ class RecoveryControllerTest {
     @Test fun mismatchedReceiptAndClearFailurePreservePending() {
         val journal = Journal(); val pc = ready(journal); pc.stage("op1", "synthetic-change", 1)
         val applied = receipt(pc.pending!!)
-        assertFailsWith<IllegalStateException> { pc.reconcileApplied(applied.copy(operation = "old-op")) }
+        assertEquals(ReconciliationResult.NOT_THIS_OPERATION, pc.reconcileApplied(applied.copy(operation = "old-op")))
+        assertTrue(pc.canEdit(2)); assertTrue(pc.hasSnapshot)
         assertNotNull(pc.pending)
         journal.failClear = true
         assertFailsWith<IllegalStateException> { pc.reconcileApplied(applied) }
@@ -72,7 +73,7 @@ class RecoveryControllerTest {
     }
     @Test fun correctReceiptClearsDeltaAndRequiresNewGrant() {
         val journal = Journal(); val pc = ready(journal); pc.stage("op1", "synthetic-change", 1)
-        pc.reconcileApplied(receipt(pc.pending!!))
+        assertEquals(ReconciliationResult.CLEARED, pc.reconcileApplied(receipt(pc.pending!!)))
         assertNull(pc.pending); assertFalse(pc.hasSnapshot); assertFalse(pc.canEdit(3))
     }
 
@@ -83,7 +84,7 @@ class RecoveryControllerTest {
         assertFailsWith<IllegalStateException> { pc.acceptGrant(Grant("fake-phone", "s2", 8, 200), 101) }
         assertNotNull(pc.pending) // reproduce the old dead end until the applied outcome is queried
         pc.observeTransport(false)
-        pc.reconcileApplied(applied) // no MTP, lease, snapshot or old session required
+        assertEquals(ReconciliationResult.CLEARED, pc.reconcileApplied(applied)) // no MTP or lease required
         assertNull(pc.pending); assertFalse(pc.canEdit(101)); assertFalse(pc.hasSnapshot)
         pc.observeTransport(true)
         assertFalse(pc.canEdit(102))
@@ -94,11 +95,14 @@ class RecoveryControllerTest {
     @Test fun allReceiptBindingMismatchesRetainExactPendingEdit() {
         val journal = Journal(); val pc = ready(journal); pc.stage("op1", "synthetic-change", 1)
         val saved = pc.pending!!; val good = receipt(saved)
-        val invalid = listOf(good.copy(device = "other-phone"), good.copy(baseRevision = 6),
-            good.copy(operation = "other-op"), good.copy(contentDigest = "0".repeat(64)),
+        for (unrelated in listOf(good.copy(device = "other-phone"), good.copy(operation = "other-op"))) {
+            assertEquals(ReconciliationResult.NOT_THIS_OPERATION, pc.reconcileApplied(unrelated))
+            assertEquals(saved, pc.pending); assertTrue(pc.canEdit(2)); assertTrue(pc.hasSnapshot)
+        }
+        val invalid = listOf(good.copy(baseRevision = 6), good.copy(contentDigest = "0".repeat(64)),
             good.copy(resultingRevision = 7), good.copy(resultingRevision = -1))
         for (bad in invalid) {
-            assertFailsWith<IllegalStateException> { pc.reconcileApplied(bad) }
+            assertEquals(ReconciliationResult.CONFLICT, pc.reconcileApplied(bad))
             assertEquals(saved, pc.pending); assertFalse(pc.canEdit(2)); assertFalse(pc.hasSnapshot)
         }
     }
@@ -108,7 +112,7 @@ class RecoveryControllerTest {
         val oldReceipt = receipt(pc.pending!!)
         pc.suspendSession()
         journal.edit = RecoveryEdit(PendingEdit("fake-phone", 7, "op1"), "different-payload")
-        assertFailsWith<IllegalStateException> { pc.reconcileApplied(oldReceipt) }
+        assertEquals(ReconciliationResult.CONFLICT, pc.reconcileApplied(oldReceipt))
         assertEquals("different-payload", pc.pending!!.syntheticDelta)
     }
 
@@ -116,11 +120,11 @@ class RecoveryControllerTest {
         val journal = Journal(); val pc = ready(journal); pc.stage("op1", "synthetic-change", 1)
         val applied = receipt(pc.pending!!)
         pc.reconcileApplied(applied)
-        assertFailsWith<IllegalStateException> { pc.reconcileApplied(applied) }
+        assertEquals(ReconciliationResult.NO_PENDING, pc.reconcileApplied(applied))
         pc.acceptGrant(Grant("fake-phone", "s2", 8, 200), 2)
         pc.loadSyntheticSnapshot(byteArrayOf(9), 2); pc.stage("op2", "new-change", 3)
-        assertFailsWith<IllegalStateException> { pc.reconcileApplied(applied) }
-        assertEquals("op2", pc.pending!!.metadata.operation); assertFalse(pc.canEdit(4))
+        assertEquals(ReconciliationResult.NOT_THIS_OPERATION, pc.reconcileApplied(applied))
+        assertEquals("op2", pc.pending!!.metadata.operation); assertTrue(pc.canEdit(4)); assertTrue(pc.hasSnapshot)
     }
 
     @Test fun receiptReadFailureStopsEditingAndPreservesRecord() {
@@ -143,5 +147,49 @@ class RecoveryControllerTest {
         val a = RecoveryEdit(PendingEdit("fake-phone", 7, "ab"), "c")
         val b = RecoveryEdit(PendingEdit("fake-phone", 7, "a"), "bc")
         assertNotEquals(a.contentDigest, b.contentDigest)
+    }
+
+    @Test fun duplicateReceiptWithNoPendingDoesNotInterruptUnsavedSnapshot() {
+        val journal = Journal(); val pc = ready(journal)
+        val old = receipt(RecoveryEdit(PendingEdit("fake-phone", 6, "old-op"), "old-change"))
+        assertEquals(ReconciliationResult.NO_PENDING, pc.reconcileApplied(old))
+        assertTrue(pc.canEdit(2)); assertTrue(pc.hasSnapshot); assertNull(pc.pending)
+        pc.stage("new-op", "new-change", 3) // current session continues normally
+        assertNotNull(pc.pending)
+    }
+
+    @Test fun sameOperationConflictStopsActiveSessionWithoutClearing() {
+        for (field in 0..2) {
+            val journal = Journal(); val pc = ready(journal); pc.stage("op1", "change", 1)
+            val saved = pc.pending!!; val good = receipt(saved)
+            val bad = when (field) {
+                0 -> good.copy(baseRevision = 6)
+                1 -> good.copy(contentDigest = "0".repeat(64))
+                else -> good.copy(resultingRevision = 7)
+            }
+            assertEquals(ReconciliationResult.CONFLICT, pc.reconcileApplied(bad))
+            assertFalse(pc.canEdit(2)); assertFalse(pc.hasSnapshot); assertEquals(saved, pc.pending)
+        }
+    }
+
+    @Test fun malformedSurrogatesAreRejectedInAllPersistedStringFields() {
+        val bad = listOf("\uD800", "\uDBFF", "\uDC00", "\uDFFF", "a\uD800b", "\uD800\uD800", "\uDC00\uD800")
+        for (value in bad) {
+            assertFailsWith<IllegalArgumentException> { RecoveryEdit(PendingEdit(value, 7, "op"), "change") }
+            assertFailsWith<IllegalArgumentException> { RecoveryEdit(PendingEdit("phone", 7, value), "change") }
+            assertFailsWith<IllegalArgumentException> { RecoveryEdit(PendingEdit("phone", 7, "op"), value) }
+            assertFailsWith<IllegalArgumentException> { recoveryContentDigest(PendingEdit("phone", 7, "op"), value) }
+        }
+        val valid = RecoveryEdit(PendingEdit("phone", 7, "op"), "合成\uD83D\uDE00\u0000")
+        assertEquals(64, valid.contentDigest.length)
+        assertNotEquals(valid.contentDigest, valid.copy(syntheticDelta = "合成?\u0000").contentDigest)
+    }
+
+    @Test fun malformedStageNeverPersistsReplacementContent() {
+        val journal = Journal(); val pc = ready(journal)
+        assertFailsWith<IllegalArgumentException> { pc.stage("op1", "\uD800", 1) }
+        assertNull(pc.pending)
+        pc.stage("op1", "valid\uD83D\uDE00", 2)
+        assertEquals("valid\uD83D\uDE00", pc.pending!!.syntheticDelta)
     }
 }

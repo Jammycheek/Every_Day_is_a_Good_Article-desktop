@@ -27,8 +27,8 @@ object RecoverySmoke {
                 controller.tick(100)
                 val edit = controller.pending!!
                 // A lost applied reply is queried after expiry; phone revision has advanced 5 -> 6.
-                controller.reconcileApplied(AppliedReceipt("fake-restart-phone", 5,
-                    "fake-restart-operation", edit.contentDigest, 6))
+                check(controller.reconcileApplied(AppliedReceipt("fake-restart-phone", 5,
+                    "fake-restart-operation", edit.contentDigest, 6)) == ReconciliationResult.CLEARED)
                 check(journal.load() == null)
                 check(!controller.canEdit(101) && !controller.hasSnapshot)
                 controller.acceptGrant(Grant("fake-restart-phone", "mock-session-2", 6, 200), 101)

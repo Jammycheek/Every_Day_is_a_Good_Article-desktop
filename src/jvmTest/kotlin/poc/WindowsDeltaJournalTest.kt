@@ -2,8 +2,35 @@ package poc
 import kotlin.test.*
 import java.nio.file.*
 import java.nio.file.attribute.AclFileAttributeView
+import java.io.ByteArrayOutputStream
+import java.io.DataOutputStream
 
 class WindowsDeltaJournalTest {
+    @Test fun malformedLegacyJournalStopsEditingAndRetainsEncryptedBytes() {
+        val helper = System.getenv("POC_HELPER") ?: error("POC_HELPER must point to the built Windows helper")
+        val directory = Files.createTempDirectory("ea-poc-malformed-test")
+        try {
+            val protector = DpapiProtector(Path.of(helper))
+            val pc = RecoveryController(WindowsDeltaJournal(directory, protector))
+            pc.observeTransport(true); pc.acceptGrant(Grant("fake-phone", "s1", 7, 100), 0)
+            pc.loadSyntheticSnapshot(byteArrayOf(1), 0)
+            val buffer = ByteArrayOutputStream()
+            DataOutputStream(buffer).use {
+                it.writeInt(0x45415031); it.writeUTF("fake-phone"); it.writeLong(7)
+                it.writeUTF("fake-op"); it.writeUTF("\uD800") // legacy writeUTF can preserve unpaired surrogates
+            }
+            val encrypted = protector.transform(buffer.toByteArray(), true)
+            val file = directory.resolve("pending.dpapi")
+            Files.write(file, encrypted)
+            assertFailsWith<IllegalArgumentException> { pc.pending }
+            assertFalse(pc.canEdit(1)); assertFalse(pc.hasSnapshot)
+            assertContentEquals(encrypted, Files.readAllBytes(file))
+        } finally {
+            Files.newDirectoryStream(directory).use { files -> files.forEach { Files.deleteIfExists(it) } }
+            Files.deleteIfExists(directory)
+        }
+    }
+
     @Test fun dpapiRestartRecoveryAndCorruptionRejection() {
         val helper = System.getenv("POC_HELPER") ?: error("POC_HELPER must point to the built Windows helper")
         val directory = Files.createTempDirectory("ea-poc-recovery-test")
@@ -24,7 +51,8 @@ class WindowsDeltaJournalTest {
             assertEquals("SYNTHETIC-SECRET-DELTA", restarted.recoveryCandidate("fake-phone", 7)?.syntheticDelta)
             assertFailsWith<IllegalStateException> { restarted.recoveryCandidate("different", 7) }
             val edit = restarted.pending!!
-            restarted.reconcileApplied(AppliedReceipt("fake-phone", 7, "fake-op", edit.contentDigest, 8))
+            assertEquals(ReconciliationResult.CLEARED,
+                restarted.reconcileApplied(AppliedReceipt("fake-phone", 7, "fake-op", edit.contentDigest, 8)))
             assertFalse(Files.exists(directory.resolve("pending.dpapi")))
             assertFalse(restarted.canEdit(102)); assertFalse(restarted.hasSnapshot)
             restarted.observeTransport(true); restarted.acceptGrant(Grant("fake-phone", "s2", 8, 200), 103)

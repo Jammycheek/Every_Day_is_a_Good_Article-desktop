@@ -1,10 +1,35 @@
 package poc
 
 data class RecoveryEdit(val metadata: PendingEdit, val syntheticDelta: String) {
+    init {
+        requireWellFormedUtf16(metadata.device)
+        requireWellFormedUtf16(metadata.operation)
+        requireWellFormedUtf16(syntheticDelta)
+    }
     /** Derived from the persisted identity, revision, operation and payload; not a signature. */
     val contentDigest: String get() = recoveryContentDigest(metadata, syntheticDelta)
 }
 internal expect fun recoveryContentDigest(metadata: PendingEdit, syntheticDelta: String): String
+
+/** Reject replacement-prone strings before persistence or UTF-8 digest encoding. */
+internal fun requireWellFormedUtf16(value: String) {
+    var index = 0
+    while (index < value.length) {
+        val code = value[index].code
+        when (code) {
+            in 0xD800..0xDBFF -> {
+                require(index + 1 < value.length && value[index + 1].code in 0xDC00..0xDFFF) {
+                    "Unpaired UTF-16 surrogate"
+                }
+                index += 2
+            }
+            in 0xDC00..0xDFFF -> throw IllegalArgumentException("Unpaired UTF-16 surrogate")
+            else -> index++
+        }
+    }
+}
+
+enum class ReconciliationResult { CLEARED, NO_PENDING, NOT_THIS_OPERATION, CONFLICT }
 
 /** Only pass a verified application applied receipt from a future authenticated channel.
  * Construction is NOT authentication. Device denotes the synthetic application/data identity.
@@ -73,13 +98,18 @@ class RecoveryController(private val journal: DeltaJournal) {
     /** Read-only outcome reconciliation needs no transport or editing grant. Never grants editing.
      * Query/authenticate the outcome BEFORE acquiring a grant at the resulting revision.
      */
-    fun reconcileApplied(receipt: AppliedReceipt) {
-        suspendSession() // even a failed/mismatched reconciliation cannot leave editing enabled
-        val edit = readJournal() ?: error("No pending edit")
-        check(receipt.device == edit.metadata.device && receipt.baseRevision == edit.metadata.baseRevision)
-        check(receipt.operation == edit.metadata.operation && receipt.contentDigest == edit.contentDigest)
-        check(receipt.resultingRevision > receipt.baseRevision)
+    fun reconcileApplied(receipt: AppliedReceipt): ReconciliationResult {
+        val edit = readJournal() ?: return ReconciliationResult.NO_PENDING
+        if (receipt.device != edit.metadata.device || receipt.operation != edit.metadata.operation)
+            return ReconciliationResult.NOT_THIS_OPERATION
+        if (receipt.baseRevision != edit.metadata.baseRevision || receipt.contentDigest != edit.contentDigest ||
+            receipt.resultingRevision <= receipt.baseRevision) {
+            suspendSession()
+            return ReconciliationResult.CONFLICT
+        }
+        suspendSession() // a matching applied result makes the current snapshot obsolete
         journal.clear() // only the exact persisted operation's trusted applied receipt permits clearing
+        return ReconciliationResult.CLEARED
     }
     fun suspendSession() {
         gate.suspendSession()
