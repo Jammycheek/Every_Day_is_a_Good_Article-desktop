@@ -34,3 +34,10 @@ The user unplugged and reconnected the phone between independent read-only probe
 - The local transport selector happened to remain unchanged. It is not trusted as application identity, nor assumed stable across other reconnects.
 
 This confirms point-in-time re-enumeration around an idle disconnect, not continuous event detection, detection latency, an in-flight transfer failure or Android session invalidation/recovery. The native probe is deliberately independent of the synthetic SessionGate. No new file writes occurred in this test.
+
+## Charging-only mode
+With the cable left connected, the user switched the phone from file transfer to charging only.
+- Before mode change: 1 WPD device, USB declaration and ancestry true, Open successful, protocol MTP: 1.00.
+- After mode change: 0 WPD devices, probe exit 0.
+
+Cable presence in this case is user-confirmed, not independently measured by the WPD-only probe. A zero WPD count therefore cannot distinguish unplugged from charging-only. USB attachment, MTP availability, and application editing-session permission must remain separate observations. No file writes occurred. Return to file-transfer mode remains to be tested.
