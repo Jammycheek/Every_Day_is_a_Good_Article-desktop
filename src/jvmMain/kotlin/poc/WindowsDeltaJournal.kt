@@ -54,7 +54,6 @@ class WindowsDeltaJournal(private val directory: Path, private val protector: Dp
     private val directoryLock: FileLock
     private var closed = false
     private val warningFile = directory.resolve("history-incomplete.warning")
-    private val baselineFile = directory.resolve("history-rebaseline.required")
     private var recoveryPreview: HistoryRecoveryPreview? = null
     private var previewBytes: ByteArray? = null
     init {
@@ -190,8 +189,8 @@ class WindowsDeltaJournal(private val directory: Path, private val protector: Dp
         try {
             val current = readEncrypted(floorFile)
             if (current == null || !current.contentEquals(expected)) return HistoryRecoveryResult.CHANGED
-            // Durable generic markers precede destructive history changes. No identifiers/plaintext payload.
-            writeMarker(warningFile); writeMarker(baselineFile)
+            // Durable generic marker precedes history changes. No identifiers/plaintext payload.
+            writeMarker(warningFile)
             when (preview.kind) {
                 HistoryRecoveryKind.FORGET_IDENTITY -> {
                     val floors = readFloors().toMutableMap()
@@ -209,16 +208,18 @@ class WindowsDeltaJournal(private val directory: Path, private val protector: Dp
     }
     @Synchronized override fun historyRecoveryRequired(identity: DatasetIdentity): Boolean {
         requireOwnership()
-        return readMarker(baselineFile) && readFloors()[identity] == null
+        return readMarker(warningFile) && readFloors()[identity] == null
     }
     @Synchronized override fun historyIsIncomplete(): Boolean { requireOwnership(); return readMarker(warningFile) }
     @Synchronized override fun finishHistoryRebaseline(identity: DatasetIdentity) {
-        requireOwnership(); check(readMarker(baselineFile)); check(readFloors()[identity] != null)
-        // Markers remain: baselining one identity must not unblock another lost/unknown identity.
+        requireOwnership(); check(readMarker(warningFile)); check(readFloors()[identity] != null)
+        // Marker remains: baselining one identity must not unblock another lost/unknown identity.
     }
     private fun readMarker(path: Path): Boolean {
-        val bytes = readEncrypted(path) ?: return false
-        check(bytes.contentEquals(byteArrayOf(1))) { "Invalid history recovery marker" }
+        val attributes = try { Files.readAttributes(path, BasicFileAttributes::class.java, LinkOption.NOFOLLOW_LINKS) }
+            catch (_: NoSuchFileException) { return false }
+        // Presence is the conservative warning bit; damaged content cannot erase it or block recovery.
+        check(attributes.isRegularFile) { "Invalid history recovery marker" }
         return true
     }
     private fun writeMarker(target: Path) {

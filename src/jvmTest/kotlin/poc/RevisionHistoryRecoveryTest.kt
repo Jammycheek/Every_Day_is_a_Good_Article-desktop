@@ -33,6 +33,8 @@ class RevisionHistoryRecoveryTest {
             assertTrue(pc.revisionHistoryIncomplete); assertTrue(pc.revisionHistoryNeedsBaseline(identity))
             assertFalse(pc.revisionHistoryNeedsBaseline(other))
             assertFailsWith<IllegalStateException> { pc.acceptGrant(grant(3), 0) }
+            Files.write(dir.resolve("history-incomplete.warning"), byteArrayOf(9, 8, 7))
+            assertTrue(pc.revisionHistoryIncomplete); assertTrue(pc.revisionHistoryNeedsBaseline(identity))
         }
         WindowsDeltaJournal(dir, protector).use { journal ->
             val pc = RecoveryController(journal); pc.observeTransport(true)
@@ -156,7 +158,7 @@ class RevisionHistoryRecoveryTest {
     }
 
     @Test fun markerWriteFailureRetainsOriginalAndConsumesTokenWithoutQuarantine() = trial { dir, protector ->
-        val obstruction = dir.resolve("history-rebaseline.required")
+        val obstruction = dir.resolve("history-incomplete.warning")
         WindowsDeltaJournal(dir, protector).use { journal ->
             val floorFile = dir.resolve("revision-floors.dpapi"); val damaged = byteArrayOf(9, 8, 7)
             Files.write(floorFile, damaged)
