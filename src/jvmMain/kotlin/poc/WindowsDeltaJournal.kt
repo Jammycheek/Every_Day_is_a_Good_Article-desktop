@@ -9,6 +9,7 @@ import java.nio.file.*
 import java.nio.file.attribute.*
 import java.util.concurrent.*
 import java.util.UUID
+import java.security.SecureRandom
 
 class ProtectionUnavailableException(cause: Throwable? = null) : IllegalStateException("Recovery protection temporarily unavailable", cause)
 class DecryptionRejectedException : IllegalStateException("Recovery ciphertext or key rejected")
@@ -17,6 +18,22 @@ class StorageFormatException(cause: Throwable? = null) : IllegalStateException("
 class DpapiProtector internal constructor(private val command: (Boolean) -> List<String>, private val timeoutMillis: Long) {
     constructor(helper: Path) : this({ encrypt -> listOf(helper.toAbsolutePath().toString(),
         if (encrypt) "protect" else "unprotect") }, 15000)
+    /** Checks current protection availability, not the existence of historical keys or file integrity. */
+    internal fun requireAvailableEnvironment() {
+        val challenge = ByteArray(32)
+        var encrypted: ByteArray? = null
+        var restored: ByteArray? = null
+        try {
+            SecureRandom().nextBytes(challenge)
+            encrypted = transform(challenge, true)
+            restored = transform(encrypted, false)
+            if (!challenge.contentEquals(restored)) throw ProtectionUnavailableException()
+        } catch (failure: Exception) {
+            throw if (failure is ProtectionUnavailableException) failure else ProtectionUnavailableException(failure)
+        } finally {
+            challenge.fill(0); encrypted?.fill(0); restored?.fill(0)
+        }
+    }
     fun transform(bytes: ByteArray, encrypt: Boolean): ByteArray {
         require(bytes.isNotEmpty() && bytes.size <= 131072)
         check(System.getProperty("os.name").startsWith("Windows"))
@@ -218,6 +235,7 @@ class WindowsDeltaJournal(private val directory: Path, private val protector: Dp
         check(rejected()) { "Readable history requires identity-scoped forgetting" }
         Thread.sleep(100)
         check(rejected()) { "History is readable on retry; repair the helper or use scoped forgetting" }
+        protector.requireAvailableEnvironment() // do not offer recovery when the current environment cannot round-trip
         previewSources = captureSources()
         check(previewSources.isNotEmpty())
         return HistoryRecoveryPreview(HistoryRecoveryKind.QUARANTINE_ALL, null, null,
@@ -248,6 +266,8 @@ class WindowsDeltaJournal(private val directory: Path, private val protector: Dp
                     }
                 }
             } finally { currentPaths.values.forEach { it.bytes?.fill(0) } }
+            if (preview.kind == HistoryRecoveryKind.QUARANTINE_ALL)
+                protector.requireAvailableEnvironment() // availability may change while the user reviews the preview
             writeMarker(warningFile) // durable warning before losing either defence
             when (preview.kind) {
                 HistoryRecoveryKind.FORGET_IDENTITY -> {

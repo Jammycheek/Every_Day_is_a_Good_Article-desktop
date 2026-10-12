@@ -16,6 +16,7 @@ object ProtectionFailureFixture {
             "reject" -> kotlin.system.exitProcess(3)
             "timeout" -> Thread.sleep(30000)
             "empty" -> Unit
+            "mismatch" -> System.out.write(byteArrayOf(1))
             "overflow" -> System.out.write(ByteArray(131073))
             "reject-once", "reject-then-fail" -> {
                 val marker = Path.of(args[1])
