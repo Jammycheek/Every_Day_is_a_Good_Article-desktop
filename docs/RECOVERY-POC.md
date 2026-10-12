@@ -1,6 +1,6 @@
 # PC recovery PoC
 Synthetic data only; no private Android protocol or real application schema.
-RecoveryController receives explicit transport observations and mock grants/acks representing a future authenticated channel. The TransportCoordinator/WindowsTransportReader polling bridge connects WPD observations to a serialized event loop; no Compose UI or private Android channel is implemented. See TRANSPORT-SESSION-BRIDGE.md and POC-RESULTS.md.
+RecoveryController receives explicit transport observations and mock grants/applied receipts representing a future authenticated channel. The TransportCoordinator/WindowsTransportReader polling bridge connects WPD observations to a serialized event loop; no Compose UI or private Android channel is implemented. See TRANSPORT-SESSION-BRIDGE.md, POC-RESULTS.md and REVIEW-RECONCILIATION.md.
 
 ## Behavior
 - Save one synthetic delta before reporting it staged.
@@ -8,7 +8,7 @@ RecoveryController receives explicit transport observations and mock grants/acks
 - Reconnection alone cannot grant editing rights.
 - Restart reads only the encrypted delta, never a full snapshot or editing grant.
 - Recovery candidate must match application identity and base revision; no automatic retransmission.
-- Matching applied acknowledgement clears the journal; errors retain recovery and stop editing.
+- reconcileApplied clears the journal only for a pre-authenticated applied receipt matching the persisted identity, base revision, operation and content digest, with an advanced resulting revision. It requires neither transport nor an editing lease and never enables editing. Errors retain recovery and stop editing.
 - Corrupted/unreadable journals raise errors and remain on disk.
 
 WindowsDeltaJournal uses the helper's binary protect/unprotect pipe with user-scope DPAPI (no machine scope), an owner-only ACL and a forced encrypted temporary file followed by atomic move. No plaintext file, console payload or command argument is used.
@@ -16,8 +16,8 @@ Calls are serialized and there is one writer. Each string is bounded to 4096 UTF
 The same Windows user typically restores data; Windows account/profile loss is outside this PoC. Admin/same-user malware is not addressed by these measures.
 
 ## Verification
-Common tests cover detach, expiry, restart, wrong identity/revision, persistence failure, stale ack, clear failure and correct ack.
-Windows JVM integration test uses the actual native DPAPI helper, writes a synthetic delta, reconstructs the controller/store, checks identity, clears via mock applied ack and tests corruption rejection.
+Common tests cover detach, expiry, restart, wrong identity/revision, persistence failure, mismatched/duplicate applied receipts, clear/read failure and lost acknowledgement after revision advance.
+Windows JVM integration test uses the actual native DPAPI helper, writes a synthetic delta, reconstructs the controller/store, checks identity, clears via a matching mock applied receipt without a lease and tests corruption rejection. The separate-JVM smoke reconciles revision 5 -> 6 before acquiring a new revision-6 grant.
 Build the native helper, set POC_HELPER to its absolute path, then run gradle jvmTest. CI does this in Windows. All test data is synthetic.
 
 ## Limits

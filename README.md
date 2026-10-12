@@ -5,6 +5,7 @@ Windows WPD/DPAPI helper and planned Compose Multiplatform UI. The phone remains
 - [Transport validation plan](docs/POC-PLAN.md)
 - [PoC results and remaining work](docs/POC-RESULTS.md)
 - [Application session contract proposal](docs/SESSION-CONTRACT-PROPOSAL.md)
+- [Review follow-up: applied receipt reconciliation](docs/REVIEW-RECONCILIATION.md)
 - [Windows probe guide](docs/WINDOWS-PROBE.md)
 - [Real-phone hardware evidence](docs/HARDWARE-VALIDATION.md)
 - [PC synthetic recovery](docs/RECOVERY-POC.md)

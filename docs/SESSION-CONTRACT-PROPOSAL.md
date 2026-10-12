@@ -33,7 +33,7 @@ Statuses should distinguish applied, rejected and pending/in-progress. An unknow
 Operation IDs are unique per logical edit, immutable and not reused for different payloads. A repeated ID with different content must be rejected. Data identity includes the intended dataset/account, not merely a handset identity.
 
 ## Lock and lease sequence
-1. Authenticate and negotiate compatibility. Establish application/data identity independent of the WPD selector.
+1. Authenticate and negotiate compatibility. Establish application/data identity independent of the WPD selector. If there is a pending edit, query/reconcile its trusted operation outcome before acquiring a new editing grant; a newer revision must not prevent querying an already-applied operation.
 2. The phone serializes RequestSession with local writes, acquires the application lock and fixes a snapshot/base revision. If any step fails, no grant is sent and no abandoned lock is left indefinitely.
 3. The PC validates the fresh Grant, identity and base revision against any pending edit. It obtains the matching snapshot only under that grant. A mismatch keeps the pending edit and blocks editing.
 4. The PC persists an edit durably before reporting it accepted. Transferred files remain staging input; the phone validates them before changing authoritative data.
@@ -53,10 +53,10 @@ The PC clears an edit only after a trusted applied outcome matches operation ID,
 - Unknown: determine whether authoritative revision and status-retention guarantees permit a retry. Reacquire a grant and require revision compatibility before any allowed retry; otherwise require reconciliation.
 
 Define operation-status retention before real-data use. Forgotten outcomes plus changed revisions must not result in silent overwrite. A different dataset/phone or revision conflict requires explicit reconciliation; no blind replay.
-Late applied outcomes remain useful even after editing permission expires. Reading a verified receipt must not itself re-enable editing. The current PoC acknowledge API requires a live mock grant and has no result revision/digest/status-query path; it is insufficient for this production reconciliation flow.
+Late applied outcomes remain useful even after editing permission expires. Reading a verified receipt must not itself re-enable editing. RecoveryController now provides reconcileApplied for exact synthetic receipts without a live grant or MTP availability; it binds the persisted identity, operation, base revision and content digest and requires an advanced resulting revision. Authentication and status querying are still not implemented. See REVIEW-RECONCILIATION.md.
 
 ## Current PoC gaps
-Grant and PendingEdit currently contain synthetic string identity and numeric revision only. There is no authenticated carrier, negotiated version, epoch, payload digest, authoritative snapshot acquisition, renew protocol, operation-status query or phone apply transaction. The one-operation journal is not a production document schema. Manual fixture grants are test inputs, not authentication.
+Grant and PendingEdit currently contain synthetic string identity and numeric revision only. RecoveryEdit derives a versioned SHA-256 content digest from the persisted synthetic fields, and AppliedReceipt binds that digest and resulting revision; this is not a production canonical schema or signature. There is no authenticated carrier, negotiated version, epoch, authoritative snapshot acquisition, renew protocol, operation-status query or phone apply transaction. Dataset incarnation, generated unique operation IDs and submitted-state persistence remain missing. The one-operation journal is not a production document schema. Manual fixture grants/receipts are test inputs, not authentication.
 The polling bridge can miss rapid unplug/replug; private session validation and authoritative revision checks must still protect apply. Persistence interrupted during save, multi-process exclusion, retention and power-loss durability need separate work before real data.
 
 ## Private integration acceptance tests
