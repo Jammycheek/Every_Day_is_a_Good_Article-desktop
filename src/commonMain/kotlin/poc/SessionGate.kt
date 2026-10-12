@@ -29,6 +29,7 @@ internal class SessionGate {
         private set
     private var pending: PendingGrantRequest? = null
     private var deadline = 0L
+    val deadlineAt: Long get() = deadline
     private var lastTime: Long? = null
     private fun observeTime(now: Long) {
         val previous = lastTime

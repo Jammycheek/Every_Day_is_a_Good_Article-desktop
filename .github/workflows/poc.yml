@@ -24,7 +24,7 @@ jobs:
         shell: pwsh
         run: |
           $env:POC_HELPER = Join-Path $PWD 'build/native/Release/wpd-probe.exe'
-          gradle --no-daemon jvmTest runRecoveryRestartSmoke pocCliJar
+          gradle --no-daemon jvmTest :protocol:test :desktop-core:test :desktop:compileKotlin runRecoveryRestartSmoke pocCliJar
       - name: Compile manual synthetic hardware drivers (no device access)
         shell: pwsh
         run: |

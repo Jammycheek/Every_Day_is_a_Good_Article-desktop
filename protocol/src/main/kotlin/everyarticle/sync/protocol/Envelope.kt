@@ -20,6 +20,7 @@ data class OpenedMessage(val senderId: String, val messageId: String, val messag
 object Envelope {
     private val MAGIC = byteArrayOf('E'.code.toByte(), 'A'.code.toByte(), 'S'.code.toByte(), 'Y'.code.toByte())
     const val MAX_FILE_BYTES = 8 * 1024 * 1024
+    const val BROADCAST = "*"
 
     private fun header(kind: Int, sender: String, recipient: String, messageId: ByteArray): ByteArray =
         MAGIC + CanonicalWriter().u8(PROTOCOL_VERSION).u8(kind).string(sender).string(recipient).bytes(messageId).toByteArray()
@@ -55,12 +56,14 @@ object Envelope {
         val kind = r.u8()
         val sender = r.string(256); val recipient = r.string(256); val id = r.bytes(16)
         if (id.size != 16) throw ProtocolFormatException("Invalid message id")
-        if (recipient != localId) throw ProtocolFormatException("Message is addressed to another endpoint")
+        // Only a pairing start may be broadcast ("*"): the PC does not know the phone's ID yet.
+        if (recipient != localId && !(kind == 0 && recipient == BROADCAST)) throw ProtocolFormatException("Message is addressed to another endpoint")
         val head = header(kind, sender, recipient, id)
         return when (kind) {
             0 -> {
                 val message = SyncMessage.decode(r.bytes(64 * 1024)).also { r.end() }
                 if (message.type !in 1..4) throw ProtocolFormatException("Unsealed non-pairing message")
+                if (recipient == BROADCAST && message !is SyncMessage.PairStart) throw ProtocolFormatException("Only pairing start may be broadcast")
                 OpenedMessage(sender, id.hex(), message, authenticated = false)
             }
             1 -> {
