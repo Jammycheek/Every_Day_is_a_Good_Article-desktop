@@ -140,7 +140,7 @@ class RecoveryController(private val journal: DeltaJournal) {
         suspendSession() // a matching applied result makes the current snapshot obsolete
         discardPreview = null
         journal.recordAppliedRevision(DatasetIdentity(receipt.device, receipt.datasetInstance), receipt.resultingRevision)
-        journal.clear() // only the exact persisted operation's trusted applied receipt permits clearing
+        journal.clear() // applied-path clearing requires this exact trusted receipt; discard is a separate decision
         return ReconciliationResult.CLEARED
     }
 

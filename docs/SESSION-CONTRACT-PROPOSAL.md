@@ -46,13 +46,17 @@ After app restart or phone reboot, old session tokens/epochs are invalid. Recove
 
 ## Durable apply and lost acknowledgements
 The phone must atomically associate authoritative changes, resulting revision and operation outcome, or provide equivalent crash-safe recovery. It cannot report applied merely because an MTP write succeeded or a staging file exists.
-The PC clears an edit only after a trusted applied outcome matches operation ID, data identity and payload digest. If the acknowledgement is lost, retain the delta. After reconnect, authenticate again and query the operation outcome before deciding whether a submission is needed.
+The PC marks an edit applied and clears it only after a trusted applied outcome matches operation ID, data identity and payload digest. A separate explicitly confirmed local abandonment path may discard the local proposal without claiming it was applied or cancelled on the phone. If the acknowledgement is lost, retain the delta until reconciliation or that explicit decision. After reconnect, authenticate again and query the operation outcome before deciding whether a submission is needed.
 - Applied with matching binding: reconcile the resulting revision and clear the local pending record using a verified receipt path.
 - Rejected: retain the pending record and expose the reason; do not rewrite its base revision automatically.
 - Pending/in-progress: wait/query under a bounded policy; do not duplicate an active operation.
 - Unknown: determine whether authoritative revision and status-retention guarantees permit a retry. Reacquire a grant and require revision compatibility before any allowed retry; otherwise require reconciliation.
 
 Define operation-status retention before real-data use. Forgotten outcomes plus changed revisions must not result in silent overwrite. A different dataset/phone or revision conflict requires explicit reconciliation; no blind replay.
+
+## Explicit user resolution of blocked pending edits
+Rejected, unknown or conflicting pending edits remain protected and block incompatible new grants until reconciliation or an explicitly confirmed local discard. The public synthetic controller supports only the discard choice: preview the current readable record, display its identity/incarnation/base revision/operation and loss consequences, require affirmative user confirmation, then re-read and compare before deletion. Cancel, a changed preview or an invalid/old token never deletes the record. Success suspends the PC session and preserves verified revision floors; it enables neither editing nor automatic replay. A new authenticated status/current-revision check and explicit fresh grant/snapshot are required before further editing. Local discard never cancels an in-progress remote operation or rolls back applied data. See REVIEW-PENDING-DISCARD.md for API results and tests.
+No user-facing UI exists yet; the token alone does not prove user consent. Encrypted export, rebasing onto a new revision, unreadable-record quarantine, operation-status retention and handling of still-running remote operations require private integration design. Until implemented, those alternatives must retain/block rather than silently delete, guess an outcome or replay.
 Late applied outcomes remain useful even after editing permission expires. Reading a verified receipt must not itself re-enable editing. RecoveryController now provides reconcileApplied for exact synthetic receipts without a live grant or MTP availability; it binds the persisted identity, operation, base revision and content digest and requires an advanced resulting revision. Authentication and status querying are still not implemented. See REVIEW-RECONCILIATION.md.
 
 ## Current PoC gaps

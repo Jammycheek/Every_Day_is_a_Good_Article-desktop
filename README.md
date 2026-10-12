@@ -7,6 +7,7 @@ Windows WPD/DPAPI helper and planned Compose Multiplatform UI. The phone remains
 - [Application session contract proposal](docs/SESSION-CONTRACT-PROPOSAL.md)
 - [Review follow-up: applied receipt reconciliation](docs/REVIEW-RECONCILIATION.md)
 - [Review follow-up: persisted revision floors](docs/REVIEW-REVISION-FLOOR.md)
+- [Review follow-up: confirmed local pending discard](docs/REVIEW-PENDING-DISCARD.md)
 - [Windows probe guide](docs/WINDOWS-PROBE.md)
 - [Real-phone hardware evidence](docs/HARDWARE-VALIDATION.md)
 - [PC synthetic recovery](docs/RECOVERY-POC.md)

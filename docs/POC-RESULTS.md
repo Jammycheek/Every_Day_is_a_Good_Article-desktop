@@ -35,5 +35,7 @@ The platform-neutral review draft is [SESSION-CONTRACT-PROPOSAL.md](SESSION-CONT
 The first review correction separates exact applied-receipt reconciliation from editing permission; see [REVIEW-RECONCILIATION.md](REVIEW-RECONCILIATION.md). Earlier hardware rows refer to the original runtime; no actual Android receipt has been tested.
 The N2 follow-up adds explicit synthetic dataset incarnation and protected revision floors, rejecting older grants across restart; see [REVIEW-REVISION-FLOOR.md](REVIEW-REVISION-FLOOR.md). Legacy records are retained without guessed identity. No private authentication or authoritative incarnation lifecycle is claimed.
 
+The N4 follow-up adds one-use, preview-bound explicitly confirmed local discard for readable blocked pending edits, retaining revision floors and requiring a fresh grant/snapshot. See [REVIEW-PENDING-DISCARD.md](REVIEW-PENDING-DISCARD.md). This is a synthetic API; actual confirmation UI, export/rebase and unreadable-record recovery remain open.
+
 ## Local artifacts
 Three successful synthetic files remain in the phone's dedicated EveryArticle-PoC folder for optional manual cleanup. Local ignored build directories contain synthetic encrypted journals, a deliberately damaged copy and logs; none were published. No test process is intentionally left running, and no further phone connection is required for document/contract review. E: was not used.
