@@ -6,7 +6,7 @@ Base: merged PR #2 main 3cde45042d52a56469987f1c6f9487a59487f7a0. Scope is curre
 
 The existing two reads, separated by 100 ms, must still independently fail with DecryptionRejectedException or StorageFormatException. Only then does DpapiProtector.requireAvailableEnvironment generate a fresh 32-byte SecureRandom challenge, protect it using the same helper, unprotect the returned ciphertext and compare exact bytes. Failure to start, timeout, pipe/exit/output error, key rejection or a successful response with different bytes all become ProtectionUnavailableException. There is no cached success, persistent canary, file write or production test switch. Challenge, ciphertext and restored byte arrays are cleared in finally.
 
-A history-quarantine preview is created only after this round trip succeeds. The environment is checked again during confirmed QUARANTINE_ALL recovery, after token consumption/source comparison and before writing the warning or moving history. If availability changed while the user reviewed the preview, the action stops without a new warning or archive; the old confirmation is consumed, so repair and a new preview are required. FORGET_IDENTITY remains unchanged.
+A history-quarantine preview is created only after this round trip succeeds. The environment is checked again during every confirmed history recovery (QUARANTINE_ALL and FORGET_IDENTITY), after token consumption/source comparison and before writing the warning or moving history. If availability changed while the user reviewed the preview, the action stops without a new warning or archive; the old confirmation is consumed, so repair and a new preview are required. U2 follow-up now applies the same pre-warning environment check to FORGET_IDENTITY. If protection fails after the successful check, the existing durable-marker-before-history ordering can still retain a conservative warning; this is not an atomic transaction.
 
 ## What success means
 
@@ -23,3 +23,7 @@ Local verification passed all 106 Kotlin tests (101 prior plus 5 environment tes
 ## Remaining
 
 T2 unreadable pending/key loss has no confirmation/quarantine exit. Q1 inactive legacy epoch files can be imported again if the combined file disappears. Actual authentication, private all-writer fencing/incarnation lifecycle, OS sleep/resume, real power loss and warning/retention policy remain separate work.
+
+## U2 follow-up
+
+Based on merged PR #3 main c8b3591. The execution-time canary is now unconditional for valid, unchanged history recovery previews. Invalid/changed confirmations still return before it. New tests cover encryption loss between forget preview and execution, no warning/history/pending change, one-use confirmation and repair/retry; and a later history-write failure after a successful canary, retaining the warning and original bytes. U1 reason classification, T2 and Q1 remain outside this small follow-up. Local verification passed all 108 Kotlin tests, Java 17 manual-driver compilation and three separate-JVM recovery modes (Kotlin 2.1.20, local JDK 25, JVM target 17). Follow-up Windows Gradle/JDK 17 CI is pending; the T1 CI above is historical evidence only for its own implementation.

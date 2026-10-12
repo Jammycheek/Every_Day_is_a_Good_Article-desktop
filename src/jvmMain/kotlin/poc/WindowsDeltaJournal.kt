@@ -266,8 +266,7 @@ class WindowsDeltaJournal(private val directory: Path, private val protector: Dp
                     }
                 }
             } finally { currentPaths.values.forEach { it.bytes?.fill(0) } }
-            if (preview.kind == HistoryRecoveryKind.QUARANTINE_ALL)
-                protector.requireAvailableEnvironment() // availability may change while the user reviews the preview
+            protector.requireAvailableEnvironment() // both forget and quarantine must check before writing the warning
             writeMarker(warningFile) // durable warning before losing either defence
             when (preview.kind) {
                 HistoryRecoveryKind.FORGET_IDENTITY -> {
