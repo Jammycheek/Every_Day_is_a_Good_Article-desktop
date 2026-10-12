@@ -56,6 +56,7 @@ class WindowsDeltaJournal(private val directory: Path, private val protector: Dp
     private val warningFile = directory.resolve("history-incomplete.warning")
     private var recoveryPreview: HistoryRecoveryPreview? = null
     private var previewBytes: ByteArray? = null
+    private var previewAttributes: BasicFileAttributes? = null
     init {
         Files.createDirectories(directory)
         check(!Files.isSymbolicLink(directory))
@@ -153,6 +154,7 @@ class WindowsDeltaJournal(private val directory: Path, private val protector: Dp
     private fun invalidateRecoveryPreview() {
         recoveryPreview = null
         previewBytes?.fill(0); previewBytes = null
+        previewAttributes = null
     }
     @Synchronized override fun revisionHistoryEntries(): Map<DatasetIdentity, Long> {
         requireOwnership(); return readFloors()
@@ -167,12 +169,16 @@ class WindowsDeltaJournal(private val directory: Path, private val protector: Dp
     }
     @Synchronized override fun prepareQuarantineHistory(): HistoryRecoveryPreview {
         requireOwnership(); invalidateRecoveryPreview()
-        val bytes = readEncrypted(floorFile) ?: error("No history to quarantine")
+        val attributes = Files.readAttributes(floorFile, BasicFileAttributes::class.java, LinkOption.NOFOLLOW_LINKS)
+        check(attributes.isRegularFile) { "History must be a regular file" }
+        // Quarantine can rename an oversized/raw-unreadable file without loading its content.
+        val bytes = try { readEncrypted(floorFile) } catch (_: Exception) { null }
         // Do not quarantine healthy history or reinterpret an absent file as corruption.
         var unreadable = false
         try { readFloors() } catch (_: Exception) { unreadable = true }
         check(unreadable) { "Readable history requires identity-scoped forgetting" }
         previewBytes = bytes
+        previewAttributes = attributes
         return HistoryRecoveryPreview(HistoryRecoveryKind.QUARANTINE_ALL, null, null,
             HistoryRecoveryConfirmation()).also { recoveryPreview = it }
     }
@@ -184,11 +190,20 @@ class WindowsDeltaJournal(private val directory: Path, private val protector: Dp
         requireOwnership()
         val preview = recoveryPreview
         if (preview == null || preview.confirmation !== confirmation) return HistoryRecoveryResult.INVALID_CONFIRMATION
-        val expected = previewBytes!!
-        recoveryPreview = null; previewBytes = null // one use, including failures
+        val expected = previewBytes
+        val attributes = previewAttributes
+        recoveryPreview = null; previewBytes = null; previewAttributes = null // one use, including failures
         try {
-            val current = readEncrypted(floorFile)
-            if (current == null || !current.contentEquals(expected)) return HistoryRecoveryResult.CHANGED
+            if (expected != null) {
+                val current = readEncrypted(floorFile)
+                if (current == null || !current.contentEquals(expected)) return HistoryRecoveryResult.CHANGED
+            } else {
+                check(preview.kind == HistoryRecoveryKind.QUARANTINE_ALL && attributes != null)
+                val current = try { Files.readAttributes(floorFile, BasicFileAttributes::class.java, LinkOption.NOFOLLOW_LINKS) }
+                    catch (_: NoSuchFileException) { return HistoryRecoveryResult.CHANGED }
+                if (!current.isRegularFile || current.fileKey() != attributes.fileKey() || current.size() != attributes.size() ||
+                    current.lastModifiedTime() != attributes.lastModifiedTime()) return HistoryRecoveryResult.CHANGED
+            }
             // Durable generic marker precedes history changes. No identifiers/plaintext payload.
             writeMarker(warningFile)
             when (preview.kind) {
@@ -204,7 +219,7 @@ class WindowsDeltaJournal(private val directory: Path, private val protector: Dp
                 }
             }
             return HistoryRecoveryResult.RECOVERED
-        } finally { expected.fill(0) }
+        } finally { expected?.fill(0) }
     }
     @Synchronized override fun historyRecoveryRequired(identity: DatasetIdentity): Boolean {
         requireOwnership()

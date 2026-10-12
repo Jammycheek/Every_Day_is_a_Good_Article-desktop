@@ -157,6 +157,24 @@ class RevisionHistoryRecoveryTest {
         WindowsDeltaJournal(dir, protector).use { journal -> assertTrue(journal.historyRecoveryRequired(identity)) }
     }
 
+    @Test fun oversizedUnreadableHistoryCanBeQuarantinedWithoutLoadingAndChangedMetadataRejects() = trial { dir, protector ->
+        WindowsDeltaJournal(dir, protector).use { journal ->
+            val file = dir.resolve("revision-floors.dpapi")
+            val oversized = ByteArray(131073) { 42 }
+            Files.write(file, oversized)
+            val pc = RecoveryController(journal); val preview = pc.prepareQuarantineRevisionHistory()
+            Files.write(file, byteArrayOf(43), StandardOpenOption.APPEND)
+            assertEquals(HistoryRecoveryResult.CHANGED, pc.recoverRevisionHistory(preview.confirmation))
+            assertTrue(Files.exists(file)); assertFalse(journal.historyIsIncomplete())
+            val changedBytes = Files.readAllBytes(file)
+            assertEquals(HistoryRecoveryResult.RECOVERED,
+                pc.recoverRevisionHistory(pc.prepareQuarantineRevisionHistory().confirmation))
+            val archive = Files.newDirectoryStream(dir, "revision-floors-quarantine-*.dpapi").use { it.single() }
+            assertContentEquals(changedBytes, Files.readAllBytes(archive))
+            assertTrue(journal.historyRecoveryRequired(identity))
+        }
+    }
+
     @Test fun markerWriteFailureRetainsOriginalAndConsumesTokenWithoutQuarantine() = trial { dir, protector ->
         val obstruction = dir.resolve("history-incomplete.warning")
         WindowsDeltaJournal(dir, protector).use { journal ->
