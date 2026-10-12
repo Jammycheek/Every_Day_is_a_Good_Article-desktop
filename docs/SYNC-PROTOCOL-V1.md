@@ -144,6 +144,13 @@ until submitted). The newest editor text is held in a single slot handed to the 
 task — end editing, connect, article switch, the periodic tick, window close — saves it first, so none of them can
 overtake the debounced autosave. Submitting saves exactly the on-screen text and sends nothing if that save fails.
 
+Submit and close run concurrently with the editor, so both make the editor read-only the moment they are requested
+and finish only after every input accepted until then is saved or set aside. Input typed after the submit click is
+newer than the submission: it is never written over the submitted text nor overwritten by it, and is saved after
+the reply if still possible, otherwise kept as unsaved input. Close decides "ready" only while the input slot is
+empty; input arriving after that decision turns it back into "blocked", and the exit itself re-checks this on the
+UI thread in the same step that closes the window.
+
 If the text can no longer be saved (permission already ended, journal write failed, another article holds the
 pending edit), it is kept in memory as *unsaved input*, shown outside the editor with "save as text" and a confirmed
 "discard". It is put back into the journal automatically only in a new session at the same incarnation and base

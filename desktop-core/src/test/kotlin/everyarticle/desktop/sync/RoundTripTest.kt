@@ -201,12 +201,17 @@ class RoundTripTest {
 
     private var workerView = ClientView()
     private var closeState = CloseState.OPEN
+    private val frozenLog = java.util.Collections.synchronizedList(mutableListOf<Boolean>())
+    /** Runs on the worker thread: simulates the user typing while a worker task is in progress. */
+    private var whileWorking: ((ClientView) -> Unit)? = null
+    private var whilePolling: (() -> Unit)? = null
     private fun worker() = SyncWorker({ onChange ->
         PcSyncClient("合成PC", DirectoryMailbox.forPc(root), pcPeers, RecoveryController(journal) { pcClock },
             transportReady = { transport }, wallMillis = { phoneClock.wall },
-            sleep = { ms -> pcClock += ms; phoneClock.advance(ms); if (pcPolls) phone.poll() }, replyTimeoutMillis = 2_000,
-            sessionMillis = 120_000, safetyAllowanceMillis = 5_000, onChange = onChange)
-    }, onView = { workerView = it }, onCloseState = { closeState = it }, autosaveDelayMillis = 600_000, tickPeriodMillis = 0)
+            sleep = { ms -> pcClock += ms; phoneClock.advance(ms); whilePolling?.invoke(); if (pcPolls) phone.poll() },
+            replyTimeoutMillis = 2_000, sessionMillis = 120_000, safetyAllowanceMillis = 5_000, onChange = onChange)
+    }, onView = { workerView = it; whileWorking?.invoke(it) }, onCloseState = { closeState = it },
+        onInputFrozen = { frozenLog += it }, autosaveDelayMillis = 600_000, tickPeriodMillis = 0)
 
     private fun journalBody() = EditPayload.decode(journal.edit!!.syntheticDelta).body
 
@@ -271,8 +276,77 @@ class RoundTripTest {
         w.editorChanged(EditorText(1, "見出し", "許可なしの入力")) // session already released by the close above
         w.requestClose(); w.awaitIdle()
         assertEquals(CloseState.BLOCKED_BY_UNSAVED, closeState); assertEquals("許可なしの入力", workerView.unsaved?.body)
-        w.closeDiscardingUnsaved(); w.awaitIdle()
+        w.closeDiscardingUnsaved(workerView.unsaved); w.awaitIdle()
         assertEquals(CloseState.READY, closeState); assertNull(workerView.unsaved); assertEquals("閉じる直前", journalBody())
+        w.shutdown()
+    }
+
+    // ---------- re-review: input racing with close and submit ----------
+
+    @Test fun inputArrivingWhileClosingIsKeptAndBlocksTheClose() {
+        val w = worker()
+        w.run("接続") { connect() }; w.awaitIdle()
+        w.editorChanged(EditorText(1, "見出し", "最初の入力"))
+        var typed = false
+        whileWorking = { v -> if (!v.sessionActive && !typed) { typed = true; w.editorChanged(EditorText(1, "見出し", "終了処理中の追加入力")) } }
+        w.requestClose()
+        assertEquals(true, frozenLog.last(), "input is frozen the moment close is requested")
+        w.awaitIdle()
+        assertTrue(typed)
+        assertEquals("最初の入力", journalBody())
+        assertEquals("終了処理中の追加入力", workerView.unsaved?.body, "late input is kept, not dropped")
+        assertEquals(CloseState.BLOCKED_BY_UNSAVED, closeState)
+        assertFalse(w.confirmExit())
+        w.shutdown()
+    }
+
+    @Test fun inputAfterCloseWasDecidedReopensTheDecision() {
+        val w = worker()
+        w.run("接続") { connect() }; w.awaitIdle()
+        w.requestClose(); w.awaitIdle()
+        assertEquals(CloseState.READY, closeState)
+        w.editorChanged(EditorText(1, "見出し", "決定直後の入力")) // an event already in flight
+        assertEquals(CloseState.BLOCKED_BY_UNSAVED, closeState)
+        assertFalse(w.confirmExit(), "exit is refused once input arrived")
+        w.flushNow(); w.awaitIdle()
+        assertEquals("決定直後の入力", workerView.unsaved?.body)
+        // Discarding what the dialog showed works; newer input in between would block again.
+        val shown = workerView.unsaved
+        w.editorChanged(EditorText(1, "見出し", "ダイアログ表示後の入力"))
+        w.closeDiscardingUnsaved(shown); w.awaitIdle()
+        assertEquals(CloseState.BLOCKED_BY_UNSAVED, closeState)
+        assertEquals("ダイアログ表示後の入力", workerView.unsaved?.body)
+        w.closeDiscardingUnsaved(workerView.unsaved); w.awaitIdle()
+        assertEquals(CloseState.READY, closeState); assertTrue(w.confirmExit()); assertEquals(CloseState.EXITING, closeState)
+        w.shutdown()
+    }
+
+    @Test fun inputTypedWhileSubmittingIsNeitherOverwrittenNorLost() {
+        val w = worker()
+        w.run("接続") { connect() }; w.awaitIdle()
+        var typed = false
+        whilePolling = { if (!typed) { typed = true; w.editorChanged(EditorText(1, "見出し", "提出後の追加入力")) } }
+        w.submit(EditorText(1, "見出し", "提出した本文"))
+        assertEquals(true, frozenLog.last(), "input is frozen the moment submit is pressed")
+        w.awaitIdle(); whilePolling = null
+        assertTrue(typed)
+        assertEquals("提出した本文", store.article(1)!!.body, "exactly the text on screen at the click is applied")
+        assertEquals(1, store.operationCount())
+        assertEquals("提出後の追加入力", workerView.unsaved?.body, "newer input is kept aside, not overwritten")
+        assertEquals(false, frozenLog.last())
+        w.shutdown()
+    }
+
+    @Test fun inputTypedWhileSubmitWaitsForAnUnansweredReplyIsKept() {
+        val w = worker()
+        w.run("接続") { connect() }; w.awaitIdle()
+        phoneMailbox.dropNextSend = true // reply lost: submit times out, the edit stays pending as submitted
+        var typed = false
+        whilePolling = { if (!typed) { typed = true; w.editorChanged(EditorText(1, "見出し", "応答待ち中の入力")) } }
+        w.submit(EditorText(1, "見出し", "応答が来ない提出"))
+        w.awaitIdle(); whilePolling = null
+        assertTrue(journal.edit!!.submitted); assertEquals("応答が来ない提出", journalBody())
+        assertEquals("応答待ち中の入力", workerView.unsaved?.body)
         w.shutdown()
     }
 

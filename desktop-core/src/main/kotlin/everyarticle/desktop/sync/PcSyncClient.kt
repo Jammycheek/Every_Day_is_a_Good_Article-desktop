@@ -457,8 +457,15 @@ class PcSyncClient(
 
     fun unsavedPlainText(): String? = view.unsaved?.let { (it.title?.let { t -> "$t\n\n" } ?: "") + it.body }
 
-    /** Explicit, confirmed by the UI: drop the in-memory unsaved text. The journal and the phone are untouched. */
-    fun discardUnsaved() { update { copy(unsaved = null, message = "保存できなかった入力を破棄しました") } }
+    /**
+     * Explicit, confirmed by the UI: drop the in-memory unsaved text the user was shown ([expected]); newer text that
+     * replaced it meanwhile is kept. The journal and the phone are untouched. @return true if it was discarded.
+     */
+    fun discardUnsaved(expected: UnsavedInput?): Boolean {
+        if (expected == null || view.unsaved != expected) return false
+        update { copy(unsaved = null, message = "保存できなかった入力を破棄しました") }
+        return true
+    }
 
     fun pendingPlainText(): String? = controller.pending?.let { EditPayload.decode(it.syntheticDelta) }
         ?.let { (it.title?.let { t -> "$t\n\n" } ?: "") + it.body }

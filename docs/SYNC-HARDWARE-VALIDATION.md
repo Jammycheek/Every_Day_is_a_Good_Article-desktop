@@ -33,6 +33,8 @@ synthetic data only. Do not use the E: drive; the desktop app stores its data un
 | 12 | Connect, type one character and **immediately** press "end editing" (within 0.5 s) | Reconnect: the editor shows the text including that last character |
 | 13 | Connect, type, unplug USB within 0.5 s of the last keystroke; wait for "connection lost"; plug in and Connect | The last keystroke is present (saved, or restored from "unsaved input" at the same base). If the phone changed meanwhile: "unsaved input" notice with save-as-text, nothing applied |
 | 14 | With "unsaved input" shown, close the window | Dialog: save as text / discard and close / stay open. Nothing closes silently |
+| 14a | Type, close the window and keep typing immediately | Editor becomes read-only at once; the app closes only if every keystroke was saved, otherwise the dialog of step 14 |
+| 14b | Press "submit", keep typing while it waits (e.g. switch the phone to charging-only to delay the reply) | Editor read-only at once; the phone gets exactly the text at the click; any keystroke after it appears as "unsaved input", never lost |
 | 15 | Quit the app; back up `%LOCALAPPDATA%\EveryArticleDesktop\pairing\pairing.dpapi`, replace it with any small synthetic file; start | "Cannot read pairing data" screen, no crash; move-aside keeps `pairing-unreadable-*.dpapi`; pending edit still listed; re-pair works |
 | 16 | Export a quarantined pending archive to a FAT32/exFAT USB stick (synthetic) | Refused as unprotected destination unless explicitly allowed; to NTFS: allowed with restricted ACL |
 

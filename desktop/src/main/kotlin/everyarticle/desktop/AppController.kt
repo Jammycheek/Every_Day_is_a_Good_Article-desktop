@@ -17,13 +17,17 @@ class AppController(clientFactory: ((ClientView) -> Unit) -> PcSyncClient, priva
     private val mutableBusy = MutableStateFlow<String?>(null)
     private val mutableError = MutableStateFlow<String?>(null)
     private val mutableCloseState = MutableStateFlow(CloseState.OPEN)
+    private val mutableInputFrozen = MutableStateFlow(false)
     val view: StateFlow<ClientView> = mutableView
     val busy: StateFlow<String?> = mutableBusy
     val error: StateFlow<String?> = mutableError
     val closeState: StateFlow<CloseState> = mutableCloseState
+    /** True from the moment submit or close is requested until it has finished; the editor is read-only meanwhile. */
+    val inputFrozen: StateFlow<Boolean> = mutableInputFrozen
 
     private val worker = SyncWorker(clientFactory, onView = { mutableView.value = it }, onBusy = { mutableBusy.value = it },
-        onError = { mutableError.value = it }, onCloseState = { mutableCloseState.value = it })
+        onError = { mutableError.value = it }, onCloseState = { mutableCloseState.value = it },
+        onInputFrozen = { mutableInputFrozen.value = it })
 
     fun run(label: String, action: PcSyncClient.() -> Unit) = worker.run(label, action)
 
@@ -35,9 +39,12 @@ class AppController(clientFactory: ((ClientView) -> Unit) -> PcSyncClient, priva
     fun submit(articleId: Long, title: String?, body: String) = worker.submit(EditorText(articleId, title, body))
 
     fun requestClose() = worker.requestClose()
-    fun closeDiscardingUnsaved() = worker.closeDiscardingUnsaved()
+    /** Discards only the unsaved text the dialog showed; newer input blocks the close again. */
+    fun closeDiscardingUnsaved() = worker.closeDiscardingUnsaved(view.value.unsaved)
     fun cancelClose() = worker.cancelClose()
+    /** UI thread, same task as the exit: false if input arrived after close was decided. */
+    fun confirmExit(): Boolean = worker.confirmExit()
 
-    /** Only after [closeState] is READY. */
+    /** After the application has exited. */
     fun shutdown() { worker.shutdown(); onClose() }
 }

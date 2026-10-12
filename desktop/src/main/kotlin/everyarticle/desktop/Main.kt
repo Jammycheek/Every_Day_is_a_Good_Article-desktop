@@ -28,8 +28,6 @@ import everyarticle.sync.protocol.WriteGate
 import poc.DpapiProtector
 import poc.RecoveryController
 import poc.WindowsDeltaJournal
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 import java.io.File
 import java.nio.file.Path
 import java.util.concurrent.Executors
@@ -42,17 +40,19 @@ import java.util.concurrent.TimeUnit
 fun main() {
     val simulated = System.getProperty("everyarticle.simulatedPhone")
     val controller = if (simulated != null) simulatedController(File(simulated)) else windowsController()
-    application {
+    application(exitProcessOnExit = false) {
         // Closing first saves the newest editor text and releases the phone; unsaved text blocks the exit (see App).
         val closeState by controller.closeState.collectAsState()
         LaunchedEffect(closeState) {
-            if (closeState == CloseState.READY) { withContext(Dispatchers.IO) { controller.shutdown() }; exitApplication() }
+            // Confirm and exit in one UI-thread step, so no keystroke can slip in between.
+            if (closeState == CloseState.READY && controller.confirmExit()) exitApplication()
         }
         Window(onCloseRequest = controller::requestClose, title = "Every Article Desktop",
             state = rememberWindowState(size = DpSize(1100.dp, 760.dp))) {
             App(controller)
         }
     }
+    controller.shutdown() // after the window is gone: the worker has nothing left to save
 }
 
 private fun windowsController(): AppController {

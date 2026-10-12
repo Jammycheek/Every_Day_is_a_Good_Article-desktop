@@ -64,7 +64,7 @@ private fun UnsavedNotice(view: ClientView, controller: AppController) {
         }
     }
     if (confirmDiscard) ConfirmDialog("保存できなかった入力を破棄しますか？", "破棄した入力は復元できません。保護済みの編集とスマホのデータは変わりません。",
-        confirm = "破棄する", onConfirm = { controller.run("破棄") { discardUnsaved() }; confirmDiscard = false },
+        confirm = "破棄する", onConfirm = { controller.run("破棄") { discardUnsaved(u) }; confirmDiscard = false },
         onDismiss = { confirmDiscard = false })
 }
 
@@ -175,17 +175,18 @@ private fun SessionPanel(view: ClientView, controller: AppController) {
 @Composable
 private fun Editor(article: ArticleSnapshot, view: ClientView, controller: AppController, onTyped: () -> Unit) {
     val pending = view.pending?.takeIf { it.articleId == article.articleId }
+    val frozen by controller.inputFrozen.collectAsState() // submit or close in progress: no new input
     var title by remember(article.articleId) { mutableStateOf(pending?.title ?: article.title ?: "") }
     var body by remember(article.articleId) { mutableStateOf(pending?.body ?: article.body) }
     val submitted = pending?.submitted == true
     Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         OutlinedTextField(title, { title = it; onTyped(); controller.draftChanged(article.articleId, it.ifEmpty { null }, body) },
-            label = { Text("見出し") }, enabled = !submitted, modifier = Modifier.fillMaxWidth())
+            label = { Text("見出し") }, enabled = !submitted && !frozen, modifier = Modifier.fillMaxWidth())
         OutlinedTextField(body, { body = it; onTyped(); controller.draftChanged(article.articleId, title.ifEmpty { null }, it) },
-            label = { Text("本文") }, enabled = !submitted, modifier = Modifier.fillMaxWidth().weight(1f))
+            label = { Text("本文") }, enabled = !submitted && !frozen, modifier = Modifier.fillMaxWidth().weight(1f))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             if (view.resubmitAllowed && submitted) Button(onClick = { controller.run("再提出") { resubmit() } }) { Text("未反映を確認済み：再提出") }
-            else Button(enabled = !submitted, onClick = { controller.submit(article.articleId, title.ifEmpty { null }, body) }) { Text("スマホへ提出") }
+            else Button(enabled = !submitted && !frozen, onClick = { controller.submit(article.articleId, title.ifEmpty { null }, body) }) { Text("スマホへ提出") }
             Text("入力は自動で暗号化保存されます（編集終了・記事の切り替え・終了の前にも保存します）。提出後は結果が確定するまで変更できません。", fontSize = 12.sp)
         }
     }
