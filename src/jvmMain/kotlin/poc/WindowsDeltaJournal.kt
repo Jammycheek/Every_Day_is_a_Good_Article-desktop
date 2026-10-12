@@ -477,9 +477,11 @@ class WindowsDeltaJournal(private val directory: Path, private val protector: Dp
         UUID.fromString(archiveId.removePrefix("pending-quarantine-").removeSuffix(".dpapi"))
         val source = directory.resolve(archiveId)
         val expected = fingerprint(source) ?: error("Archive missing")
-        val target = destination.toAbsolutePath().normalize()
-        val parent = target.parent
-        check(parent.toRealPath() == parent && parent != directory.toAbsolutePath().normalize()) { "Export needs a separate existing local directory" }
+        val requested = destination.toAbsolutePath().normalize()
+        val parent = requested.parent.toRealPath()
+        check(parent != directory.toRealPath()) { "Export needs a separate existing local directory" }
+        // Resolve existing directory aliases once; never follow a destination-file link.
+        val target = parent.resolve(requested.fileName)
         var created = false
         try {
             FileChannel.open(target, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE, LinkOption.NOFOLLOW_LINKS).use { output ->

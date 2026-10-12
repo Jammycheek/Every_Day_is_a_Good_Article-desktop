@@ -54,6 +54,8 @@ class PendingRecoveryTest {
                 assertEquals(1, Files.getFileAttributeView(output, AclFileAttributeView::class.java).acl.size)
                 assertFails { journal.exportPendingArchive(archiveId, output) }; assertContentEquals(damaged, Files.readAllBytes(output))
                 assertFails { journal.exportPendingArchive("../pending.dpapi", exportDir.resolve("bad")) }
+                assertFails { journal.exportPendingArchive(archiveId, dir.resolve("forbidden-export.dpapi")) }
+                assertFalse(Files.exists(dir.resolve("forbidden-export.dpapi")))
                 assertContentEquals(damaged, Files.readAllBytes(dir.resolve(archiveId)))
             }
         } finally { Files.newDirectoryStream(exportDir).use { it.forEach { p -> Files.delete(p) } }; Files.delete(exportDir) }

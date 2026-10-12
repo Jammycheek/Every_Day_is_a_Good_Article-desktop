@@ -22,7 +22,7 @@ A marker or move failure retains original ciphertext (or, on successful move, it
 
 ### Encrypted export
 
-Windows adapter `exportPendingArchive(archiveId, destination)` copies only retained ciphertext to a caller-selected separate existing local directory. Strict UUID filename validation keeps the source inside the owned recovery directory; regular-file/no-follow reads and streamed hashes validate the copy. CREATE_NEW prevents overwrite; owner-only ACL is applied, data is forced, and a failed new export is cleaned up where possible. Existing destination bytes are never removed. Export needs no working DPAPI key; the original archive remains. No plaintext export, promotion, auto restore or archive deletion is provided. It is an API for a future save dialog, not a completed UI.
+Windows adapter `exportPendingArchive(archiveId, destination)` copies only retained ciphertext to a caller-selected separate existing local directory. Strict UUID filename validation keeps the source inside the owned recovery directory; regular-file/no-follow reads and streamed hashes validate the copy. The existing destination parent is resolved to its real path once (including runner directory aliases) and must differ from the recovery directory real path. CREATE_NEW prevents overwrite; owner-only ACL is applied, data is forced, and a failed new export is cleaned up where possible. Existing destination bytes are never removed. Export needs no working DPAPI key; the original archive remains. No plaintext export, promotion, auto restore or archive deletion is provided. It is an API for a future save dialog, not a completed UI.
 
 ## Q1: prevent inactive legacy resurrection
 
