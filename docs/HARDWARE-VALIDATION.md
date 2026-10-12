@@ -113,3 +113,11 @@ Using tools/CrashHoldSmoke.java with a fresh local journal directory, a dedicate
 - forced-stop-recovery-verified=1; encrypted-journal-unchanged=true; parent exited 0.
 
 This verifies retention after forced termination of a paused PoC JVM with a completed save. The snapshot is absent in the new process; this does not prove forensic erasure of the terminated process's memory/pagefile. No phone files were written and no other application was terminated. Interrupting journal replacement, Windows reboot, power loss and private Android lock/recovery remain unverified.
+
+## Corrupted synthetic journal while mock permission is active
+tools/CorruptJournalCheck.java used the same CI-built controller/helper with ready real MTP transport. After verifying the original known synthetic edit, it saved a new owner-restricted encrypted copy, created a mock grant/snapshot, and flipped the copy's final byte. The controller's pending read was rejected.
+- corrupt-read-rejected=true; mock-can-edit=false; snapshot=false.
+- The damaged copy was preserved byte-for-byte, and the original encrypted journal was unchanged.
+- corruption-safety-verified=1; process exit 0; Java 17 compilation succeeded.
+
+No phone files or real data were changed. This verifies fail-closed revocation and preservation for one DPAPI corruption case; it does not restore corrupted contents, test every malformed file, or substitute for interruption-during-save testing. The damaged synthetic copy remains in the ignored local build directory.
