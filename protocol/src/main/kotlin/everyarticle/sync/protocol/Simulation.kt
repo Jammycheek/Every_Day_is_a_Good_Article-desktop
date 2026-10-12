@@ -10,8 +10,11 @@ class InMemoryAuthorityStore(articles: List<ArticleText> = emptyList(), state: S
     private val committedOperations = LinkedHashMap<String, OperationRecord>()
     /** Throws inside the next transaction after the given number of article writes (simulated crash/IO failure). */
     var failNextWrite = false
+    /** Runs at the start of the next transaction, before any read (simulates waiting for the database). */
+    var beforeNextTransaction: (() -> Unit)? = null
 
     @Synchronized override fun <T> transaction(block: (AuthorityTransaction) -> T): T {
+        beforeNextTransaction?.let { beforeNextTransaction = null; it() }
         val tx = Tx(committedState, LinkedHashMap(committedArticles), LinkedHashMap(committedOperations))
         val result = block(tx)
         committedState = tx.state; committedArticles.clear(); committedArticles.putAll(tx.articles)

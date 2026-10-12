@@ -169,6 +169,29 @@ class AuthorityTest {
         val revived = authority.handle("pc", SyncMessage.SessionRequest("r2", SessionMode.RENEW, inc, g.sessionId, g.epoch, 30_000))
         assertEquals(RefusalReason.SESSION_EXPIRED, (revived as SyncMessage.SessionRefused).reason)
     }
+    @Test fun deadlinePassingWhileWaitingForTheDatabaseStopsSubmitRenewAndSnapshot() {
+        val g = acquire(duration = 30_000) as SyncMessage.SessionGrant
+        clock.advance(29_000) // still live at gate entry ...
+        store.beforeNextTransaction = { clock.advance(2_000) } // ... but expires while the database is busy
+        val late = submit(g, "op1", "late")
+        assertEquals(OperationStatus.NOT_APPLIED, late.status); assertEquals(RefusalReason.SESSION_EXPIRED, late.reason)
+        assertEquals("original", store.article(1)!!.body); assertEquals(0, store.operationCount())
+        assertEquals(g.baseRevision, store.snapshotState().revision)
+        assertEquals(OperationStatus.NOT_APPLIED, query("op1", "late", g.baseRevision).status)
+
+        val g2 = acquire("b", duration = 30_000) as SyncMessage.SessionGrant
+        clock.advance(29_000)
+        store.beforeNextTransaction = { clock.advance(2_000) }
+        val renewal = authority.handle("pc", SyncMessage.SessionRequest("r", SessionMode.RENEW, inc, g2.sessionId, g2.epoch, 30_000))
+        assertEquals(RefusalReason.SESSION_EXPIRED, (renewal as SyncMessage.SessionRefused).reason)
+        gate.localWrite { } // not revived: the expired lock is gone
+
+        val g3 = acquire("c", duration = 30_000) as SyncMessage.SessionGrant
+        clock.advance(29_000)
+        store.beforeNextTransaction = { clock.advance(2_000) }
+        val snapshot = authority.handle("pc", SyncMessage.SnapshotRequest("s", g3.sessionId, g3.epoch))
+        assertEquals(RefusalReason.SESSION_EXPIRED, (snapshot as SyncMessage.SessionRefused).reason)
+    }
     @Test fun localEditBetweenSessionsTurnsPendingIntoConflictNotOverwrite() {
         val g = acquire() as SyncMessage.SessionGrant
         authority.handle("pc", SyncMessage.SessionRelease(g.sessionId, g.epoch))

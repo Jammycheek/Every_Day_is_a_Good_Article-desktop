@@ -514,7 +514,8 @@ class WindowsDeltaJournal(private val directory: Path, private val protector: Dp
         check(parent != directory.toRealPath()) { "Export needs a separate existing local directory" }
         // Resolve existing directory aliases once; never follow a destination-file link.
         val target = parent.resolve(requested.fileName)
-        val aclCapable = Files.getFileAttributeView(parent, AclFileAttributeView::class.java) != null
+        // The view object exists on every Windows volume; only the file store says whether ACLs are kept (not on FAT32/exFAT).
+        val aclCapable = Files.getFileStore(parent).supportsFileAttributeView(AclFileAttributeView::class.java)
         if (!aclCapable && !allowUnprotectedFilesystem) throw UnprotectedExportDestinationException()
         var created = false
         try {

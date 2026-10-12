@@ -11,7 +11,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import everyarticle.desktop.sync.ClientView
+import everyarticle.desktop.sync.CloseState
+import everyarticle.desktop.sync.PcSyncClient
 import everyarticle.desktop.sync.DecisionKind
+import everyarticle.desktop.sync.PairingStoreProblem
 import everyarticle.sync.protocol.ArticleSnapshot
 import everyarticle.sync.protocol.RefusalReason
 import poc.PendingDiscardPreview
@@ -31,14 +34,79 @@ fun App(controller: AppController) {
                 StatusBar(view, busy)
                 error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
                 view.message?.let { Text(it) }
+                UnsavedNotice(view, controller)
                 when {
+                    view.pairingStoreProblem != null -> PairingStorePanel(view, controller)
                     view.paired == null || view.pairingInProgress -> PairingPanel(view, controller)
                     view.decision != null -> DecisionPanel(view, controller)
                     else -> SessionPanel(view, controller)
                 }
             }
         }
+        val closeState by controller.closeState.collectAsState()
+        if (closeState == CloseState.BLOCKED_BY_UNSAVED) CloseBlockedDialog(controller)
     }
+}
+
+/** Latest editor text that could not be encrypted to the journal: shown outside the editor until exported or discarded. */
+@Composable
+private fun UnsavedNotice(view: ClientView, controller: AppController) {
+    val u = view.unsaved ?: return
+    var confirmDiscard by remember { mutableStateOf(false) }
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text("保存できなかった最新の入力があります（記事 ${u.articleId}「${u.title ?: "見出しなし"}」）", fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.error)
+        Text("編集許可が終わったなどの理由で暗号化保存できていません。このPCのメモリにだけあり、アプリを閉じると失われます。" +
+            "同じ版のまま再接続できれば編集に戻します。", fontSize = 12.sp)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            ExportTextButton(controller, "入力をテキストで保存…") { unsavedPlainText() }
+            OutlinedButton(onClick = { confirmDiscard = true }) { Text("この入力を破棄…") }
+        }
+    }
+    if (confirmDiscard) ConfirmDialog("保存できなかった入力を破棄しますか？", "破棄した入力は復元できません。保護済みの編集とスマホのデータは変わりません。",
+        confirm = "破棄する", onConfirm = { controller.run("破棄") { discardUnsaved() }; confirmDiscard = false },
+        onDismiss = { confirmDiscard = false })
+}
+
+@Composable
+private fun CloseBlockedDialog(controller: AppController) {
+    AlertDialog(onDismissRequest = controller::cancelClose,
+        title = { Text("保存できなかった入力があります") },
+        text = { Text("このまま閉じると、暗号化保存できなかった最新の入力が失われます。先にテキストで保存するか、破棄して閉じるかを選んでください。") },
+        confirmButton = {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                ExportTextButton(controller, "テキストで保存…") { unsavedPlainText() }
+                TextButton(onClick = controller::closeDiscardingUnsaved) { Text("破棄して閉じる", color = MaterialTheme.colorScheme.error) }
+            }
+        },
+        dismissButton = { Button(onClick = controller::cancelClose) { Text("閉じずに戻る") } })
+}
+
+/** Pairing data could not be read at start: retry, or (confirmed) keep it aside and pair again. Edits are untouched. */
+@Composable
+private fun PairingStorePanel(view: ClientView, controller: AppController) {
+    val problem = view.pairingStoreProblem ?: return
+    var confirmReset by remember { mutableStateOf(false) }
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text("ペアリング情報を読み取れません", fontSize = 18.sp, fontWeight = FontWeight.Bold)
+        Text(when (problem) {
+            PairingStoreProblem.TRANSIENT -> "保護機能の一時的な失敗か、ファイルが使用中の可能性があります。少し待ってから再試行してください。"
+            PairingStoreProblem.KEY_STATE -> "Windowsが鍵の状態の問題を報告しました。パスワードを再設定した場合は、以前のパスワードやアカウントの鍵を戻すと読めるようになる可能性があります。"
+            PairingStoreProblem.DATA_REJECTED -> "Windowsが保護データを受け付けませんでした。破損しているか、別のアカウント・PCで保護された可能性があります。"
+            PairingStoreProblem.INVALID_FORMAT -> "復号はできましたが形式が正しくありません（破損またはアプリの版の違い）。アプリの更新で読める場合は退避は不要です。"
+        })
+        Text("未反映の編集と履歴は別に保存されており、ここでの操作では変わりません。", fontSize = 12.sp)
+        view.pending?.let { PendingNotice(view, controller) }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(onClick = { controller.run("再試行") { openPairingStore() } }) { Text("再試行") }
+            OutlinedButton(onClick = { confirmReset = true }) { Text("退避して再ペアリング…") }
+        }
+    }
+    if (confirmReset) ConfirmDialog("ペアリング情報を退避して、ペアリングし直しますか？",
+        "読めないファイルは削除せず、別名で同じフォルダに残します。このPCは新しいPCとしてスマホとペアリングし直します" +
+            "（スマホ側に残る古いPCの登録は、スマホの「PCと連携」から削除できます）。未反映の編集と履歴は変わりません。",
+        confirm = "退避する", onConfirm = { controller.run("退避") { resetPairingStore() }; confirmReset = false },
+        onDismiss = { confirmReset = false })
 }
 
 @Composable
@@ -86,37 +154,39 @@ private fun SessionPanel(view: ClientView, controller: AppController) {
         return
     }
     var selected by remember(view.articles) { mutableStateOf(view.pending?.articleId ?: view.articles.firstOrNull()?.articleId) }
+    // Typing in an article locks the others even before the first autosave lands, like a pending edit does.
+    var typedIn by remember(view.articles) { mutableStateOf<Long?>(null) }
+    val editingId = view.pending?.articleId ?: typedIn
     Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
         LazyColumn(Modifier.width(300.dp).fillMaxHeight()) {
             items(view.articles, key = { it.articleId }) { a ->
-                val pendingId = view.pending?.articleId
-                val locked = pendingId != null && pendingId != a.articleId
-                Column(Modifier.fillMaxWidth().clickable(enabled = !locked) { selected = a.articleId }.padding(8.dp)) {
+                val locked = editingId != null && editingId != a.articleId
+                Column(Modifier.fillMaxWidth().clickable(enabled = !locked) { controller.flushEditor(); selected = a.articleId }.padding(8.dp)) {
                     Text("${a.articleDate}  ${a.title ?: "（見出しなし）"}", fontWeight = if (a.articleId == selected) FontWeight.Bold else FontWeight.Normal)
                     Text(a.topicName, fontSize = 12.sp)
                 }
             }
         }
         val article = view.articles.firstOrNull { it.articleId == selected }
-        if (article != null) Editor(article, view, controller)
+        if (article != null) Editor(article, view, controller) { typedIn = article.articleId }
     }
 }
 
 @Composable
-private fun Editor(article: ArticleSnapshot, view: ClientView, controller: AppController) {
+private fun Editor(article: ArticleSnapshot, view: ClientView, controller: AppController, onTyped: () -> Unit) {
     val pending = view.pending?.takeIf { it.articleId == article.articleId }
     var title by remember(article.articleId) { mutableStateOf(pending?.title ?: article.title ?: "") }
     var body by remember(article.articleId) { mutableStateOf(pending?.body ?: article.body) }
     val submitted = pending?.submitted == true
     Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        OutlinedTextField(title, { title = it; controller.draftChanged(article.articleId, it.ifEmpty { null }, body) },
+        OutlinedTextField(title, { title = it; onTyped(); controller.draftChanged(article.articleId, it.ifEmpty { null }, body) },
             label = { Text("見出し") }, enabled = !submitted, modifier = Modifier.fillMaxWidth())
-        OutlinedTextField(body, { body = it; controller.draftChanged(article.articleId, title.ifEmpty { null }, it) },
+        OutlinedTextField(body, { body = it; onTyped(); controller.draftChanged(article.articleId, title.ifEmpty { null }, it) },
             label = { Text("本文") }, enabled = !submitted, modifier = Modifier.fillMaxWidth().weight(1f))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             if (view.resubmitAllowed && submitted) Button(onClick = { controller.run("再提出") { resubmit() } }) { Text("未反映を確認済み：再提出") }
             else Button(enabled = !submitted, onClick = { controller.submit(article.articleId, title.ifEmpty { null }, body) }) { Text("スマホへ提出") }
-            Text("入力は自動で暗号化保存されます。提出後は結果が確定するまで変更できません。", fontSize = 12.sp)
+            Text("入力は自動で暗号化保存されます（編集終了・記事の切り替え・終了の前にも保存します）。提出後は結果が確定するまで変更できません。", fontSize = 12.sp)
         }
     }
 }
@@ -127,7 +197,7 @@ private fun PendingNotice(view: ClientView, controller: AppController) {
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Text("PCに未反映の編集が保護されています（記事 ${p.articleId}、${if (p.submitted) "提出済み・結果未確定" else "未提出"}）")
         Text("接続すると、まずスマホに状態を照会します。結果が確定するまで自動では再送しません。", fontSize = 12.sp)
-        ExportTextButton(controller)
+        ExportTextButton(controller, "内容をテキストで保存…") { pendingPlainText() }
     }
 }
 
@@ -145,7 +215,7 @@ private fun DecisionPanel(view: ClientView, controller: AppController) {
             if (decision == DecisionKind.UNREADABLE)
                 OutlinedButton(onClick = { controller.run("隔離の準備") { quarantinePreview = preparePendingQuarantine() } }) { Text("隔離の準備") }
             else {
-                ExportTextButton(controller)
+                ExportTextButton(controller, "内容をテキストで保存…") { pendingPlainText() }
                 OutlinedButton(onClick = { controller.run("破棄の準備") { discardPreview = prepareDiscard() } }) { Text("PC側の編集を破棄…") }
             }
         }
@@ -165,19 +235,19 @@ private fun DecisionPanel(view: ClientView, controller: AppController) {
 }
 
 @Composable
-private fun ExportTextButton(controller: AppController) {
+private fun ExportTextButton(controller: AppController, label: String, source: PcSyncClient.() -> String?) {
     OutlinedButton(onClick = {
         // The chooser runs on the UI thread; only the file write runs on the sync worker.
         val chooser = JFileChooser().apply { dialogTitle = "編集内容をテキストとして保存（平文）"; selectedFile = File("every-article-edit.txt") }
         if (chooser.showSaveDialog(null) == JFileChooser.APPROVE_OPTION) {
             val file = chooser.selectedFile
             controller.run("書き出し") {
-                val text = pendingPlainText() ?: return@run
+                val text = source() ?: return@run
                 check(!file.exists()) { "既存のファイルは上書きしません" }
                 file.writeText(text, Charsets.UTF_8)
             }
         }
-    }) { Text("内容をテキストで保存…") }
+    }) { Text(label) }
 }
 
 @Composable

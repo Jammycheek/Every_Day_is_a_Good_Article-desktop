@@ -96,7 +96,11 @@ the current synthetic defaults are 5 min requested, 15 s allowance and a 10 min 
 writes fail immediately with `EditLockedException` while a live PC lock exists; an expired lock is cleared under the
 same gate before the next decision, without any PC message. Inside the gate, PC apply checks in one transaction:
 session matches peer/sessionId/epoch and is unexpired, `state.epoch == epoch` (epoch fence), incarnation, base
-revision, article exists; then updates title/body, `revision+1` and inserts the operation record. Drafts and
+revision, article exists, and — as the last step before writing, after any wait for the database — that the lock's
+deadline has not passed on the phone's clock; then updates title/body, `revision+1` and inserts the operation record.
+Renewal and snapshot also re-check the deadline after their database read, so an expired lock is never revived and
+no data leaves after expiry. (The commit itself completes a few milliseconds after that check; the PC's deadline is
+earlier by the safety allowance, so this never extends what the PC believes it may do.) Drafts and
 "last opened" metadata are not content and are not blocked, so typing on the phone is never lost; instead a local
 save compares the article's `updatedAt` captured when editing began and refuses to overwrite a PC-applied change.
 
@@ -136,9 +140,19 @@ confirmed discard/quarantine clears it. Seen message IDs: newest 4096 per phone.
 ## 11. Unsaved editor text
 
 The PC editor autosaves ~0.7 s after typing stops into the DPAPI journal (one staged operation, same operation ID
-until submitted). Disconnect, expiry or a failed renewal releases the snapshot and closes editing; the last
-autosaved text stays protected and is offered again after reconnect if the base revision is unchanged, or as a
-`CONFLICT` decision otherwise. The window of loss is the last <0.7 s of typing. On the phone, drafts keep autosaving.
+until submitted). The newest editor text is held in a single slot handed to the sync worker, and **every** worker
+task — end editing, connect, article switch, the periodic tick, window close — saves it first, so none of them can
+overtake the debounced autosave. Submitting saves exactly the on-screen text and sends nothing if that save fails.
+
+If the text can no longer be saved (permission already ended, journal write failed, another article holds the
+pending edit), it is kept in memory as *unsaved input*, shown outside the editor with "save as text" and a confirmed
+"discard". It is put back into the journal automatically only in a new session at the same incarnation and base
+revision (nothing moved on the phone, nothing is sent); otherwise it stays aside for export. Closing the window
+saves and releases first; if unsaved input remains, the app asks to export it, discard it, or stay open.
+
+Disconnect, expiry or a failed renewal releases the snapshot and closes editing; the protected draft is offered
+again after reconnect if the base revision is unchanged, or as a `CONFLICT` decision otherwise. On the phone,
+drafts keep autosaving.
 
 ## 12. Failure handling summary
 
@@ -152,6 +166,7 @@ autosaved text stays protected and is offered again after reconnect if the base 
 | PC journal write failure | editing stops, last saved text kept |
 | Phone write failure | transaction rolled back; status stays `NOT_APPLIED` |
 | Backup restore on phone | `INCARNATION_MISMATCH` for old pending/grants |
+| Unreadable PC pairing file at start | shown on screen (temporary / key state / rejected / format); retry, or a confirmed move-aside (file renamed, never deleted) and pairing again as a new PC. Pending edit and history are separate files and untouched |
 | Unreadable PC journal/history | existing confirmed quarantine/export flows (PR #1–#5), reason-specific guidance (V3) |
 
 ## 13. Decisions taken for v1 and open items

@@ -30,6 +30,11 @@ synthetic data only. Do not use the E: drive; the desktop app stores its data un
 | 9 | Pending draft on PC (unplugged), edit the same article on the phone after the lock expires, reconnect | PC shows CONFLICT; phone text is not overwritten; discard needs a confirmation dialog |
 | 10 | Force-stop the phone app during a session, reopen, PC submits | Not applied (session from an old epoch); reconnect → NOT_APPLIED → user resubmits → applied once |
 | 11 | Restore a synthetic backup on the phone while the PC holds a pending edit | PC shows "phone data was replaced" (REJECTED); nothing applied |
+| 12 | Connect, type one character and **immediately** press "end editing" (within 0.5 s) | Reconnect: the editor shows the text including that last character |
+| 13 | Connect, type, unplug USB within 0.5 s of the last keystroke; wait for "connection lost"; plug in and Connect | The last keystroke is present (saved, or restored from "unsaved input" at the same base). If the phone changed meanwhile: "unsaved input" notice with save-as-text, nothing applied |
+| 14 | With "unsaved input" shown, close the window | Dialog: save as text / discard and close / stay open. Nothing closes silently |
+| 15 | Quit the app; back up `%LOCALAPPDATA%\EveryArticleDesktop\pairing\pairing.dpapi`, replace it with any small synthetic file; start | "Cannot read pairing data" screen, no crash; move-aside keeps `pairing-unreadable-*.dpapi`; pending edit still listed; re-pair works |
+| 16 | Export a quarantined pending archive to a FAT32/exFAT USB stick (synthetic) | Refused as unprotected destination unless explicitly allowed; to NTFS: allowed with restricted ACL |
 
 Record for each step: date, app commits, Windows/phone versions, observed messages, and whether the phone-side
 article and operation count match. Also record the time from PC write to phone reply (MTP visibility latency).

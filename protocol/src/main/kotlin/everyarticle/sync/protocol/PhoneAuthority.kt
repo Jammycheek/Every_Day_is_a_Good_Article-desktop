@@ -178,11 +178,16 @@ class PhoneAuthority(
         val validity = validity(m.maximumDurationMillis)
             ?: return SyncMessage.SessionRefused(m.requestNonce, RefusalReason.INVALID_PAYLOAD)
         val s = store.transaction { it.state() }
+        // The database may have kept us waiting: an expired lock is never revived by a late renewal.
+        if (!unexpired(live)) return SyncMessage.SessionRefused(m.requestNonce, RefusalReason.SESSION_EXPIRED)
         if (s.epoch != live.epoch) return SyncMessage.SessionRefused(m.requestNonce, RefusalReason.STALE_EPOCH)
         if (s.incarnation != m.datasetIncarnation) return SyncMessage.SessionRefused(m.requestNonce, RefusalReason.INCARNATION_MISMATCH)
         gate.setLock(live.copy(deadlineElapsed = maxOf(live.deadlineElapsed, clock.elapsedMillis() + validity)))
         return SyncMessage.SessionGrant(m.requestNonce, live.sessionId, live.epoch, appIdentity, s.incarnation, s.revision, validity)
     }
+
+    /** Checked again after every database wait; the gate entry check alone is not enough. */
+    private fun unexpired(lock: LockInfo): Boolean = clock.elapsedMillis() < lock.deadlineElapsed
 
     private fun matchingSession(peerId: String, sessionId: String, epoch: Long): LockInfo? =
         gate.liveLock()?.takeIf { it.peerId == peerId && it.sessionId == sessionId && it.epoch == epoch }
@@ -190,6 +195,7 @@ class PhoneAuthority(
     private fun snapshot(peerId: String, m: SyncMessage.SnapshotRequest): SyncMessage {
         matchingSession(peerId, m.sessionId, m.epoch) ?: return SyncMessage.SessionRefused(m.requestNonce, RefusalReason.NO_SESSION)
         val (state, articles) = store.transaction { tx -> tx.state() to tx.articles() }
+        if (gate.liveLock()?.let(::unexpired) != true) return SyncMessage.SessionRefused(m.requestNonce, RefusalReason.SESSION_EXPIRED)
         if (state.epoch != m.epoch) return SyncMessage.SessionRefused(m.requestNonce, RefusalReason.STALE_EPOCH)
         val size = articles.sumOf { 64L + CanonicalWriter.utf8(it.body).size + (it.title?.let { t -> CanonicalWriter.utf8(t).size } ?: 0) +
             CanonicalWriter.utf8(it.topicName).size }
@@ -224,6 +230,8 @@ class PhoneAuthority(
         if (s.epoch != m.epoch) return@transaction report(m, notApplied, s, RefusalReason.STALE_EPOCH)
         if (s.revision != m.baseRevision) return@transaction report(m, OperationStatus.CONFLICT, s, RefusalReason.REVISION_MISMATCH)
         if (tx.article(m.edit.articleId) == null) return@transaction report(m, OperationStatus.REJECTED, s, RefusalReason.UNKNOWN_ARTICLE)
+        // Last check before the change, after any wait for the database: past the deadline nothing is written.
+        if (!unexpired(session)) return@transaction report(m, notApplied, s, RefusalReason.SESSION_EXPIRED)
         val now = clock.wallMillis()
         tx.replaceArticleText(m.edit.articleId, m.edit.title, m.edit.body, now)
         val resulting = s.revision + 1

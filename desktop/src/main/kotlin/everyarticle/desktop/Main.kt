@@ -1,10 +1,14 @@
 package everyarticle.desktop
 
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
 import androidx.compose.ui.window.rememberWindowState
+import everyarticle.desktop.sync.CloseState
 import everyarticle.desktop.sync.InMemoryPcPeerStore
 import everyarticle.desktop.sync.PcSyncClient
 import everyarticle.desktop.sync.ProtectedPcPeerStore
@@ -24,6 +28,8 @@ import everyarticle.sync.protocol.WriteGate
 import poc.DpapiProtector
 import poc.RecoveryController
 import poc.WindowsDeltaJournal
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.nio.file.Path
 import java.util.concurrent.Executors
@@ -37,7 +43,12 @@ fun main() {
     val simulated = System.getProperty("everyarticle.simulatedPhone")
     val controller = if (simulated != null) simulatedController(File(simulated)) else windowsController()
     application {
-        Window(onCloseRequest = { controller.close(); exitApplication() }, title = "Every Article Desktop",
+        // Closing first saves the newest editor text and releases the phone; unsaved text blocks the exit (see App).
+        val closeState by controller.closeState.collectAsState()
+        LaunchedEffect(closeState) {
+            if (closeState == CloseState.READY) { withContext(Dispatchers.IO) { controller.shutdown() }; exitApplication() }
+        }
+        Window(onCloseRequest = controller::requestClose, title = "Every Article Desktop",
             state = rememberWindowState(size = DpSize(1100.dp, 760.dp))) {
             App(controller)
         }

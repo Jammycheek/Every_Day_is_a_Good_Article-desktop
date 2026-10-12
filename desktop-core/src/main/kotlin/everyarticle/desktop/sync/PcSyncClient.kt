@@ -27,12 +27,22 @@ import poc.RecoveryController
 import poc.RecoveryEdit
 import poc.ReconciliationResult
 
+/** Why the protected pairing data could not be read. [TRANSIENT] may succeed on retry. */
+enum class PairingStoreProblem { TRANSIENT, KEY_STATE, DATA_REJECTED, INVALID_FORMAT }
+
+class PairingStoreUnavailableException(val problem: PairingStoreProblem, cause: Throwable? = null) :
+    IllegalStateException("Pairing store unavailable: $problem", cause)
+
 /** Paired peers and this PC's own stable identity, kept in protected local storage. */
 interface PcPeerStore {
     val pcId: String
     fun peer(): PairedPeer?
     fun save(peer: PairedPeer)
     fun forget()
+    /** Read (or create) the stored identity; throws [PairingStoreUnavailableException]. Called before anything else. */
+    fun open() {}
+    /** User-confirmed: keep the unreadable data aside and start without a pairing. Returns where it was kept. */
+    fun moveAsideAndReset(): String = throw UnsupportedOperationException()
 }
 
 class InMemoryPcPeerStore(override val pcId: String = "pc-" + SyncCrypto.randomHex(8)) : PcPeerStore {
@@ -48,6 +58,15 @@ enum class DecisionKind { CONFLICT, REJECTED, UNKNOWN, UNREADABLE }
 data class PendingSummary(val articleId: Long, val title: String?, val body: String, val submitted: Boolean,
     val baseRevision: Long, val incarnation: String?)
 
+/**
+ * Newest editor text that is NOT in the protected journal (autosave failed or permission ended first).
+ * Kept in memory only, outside the editor, so it survives the session ending; it is never sent to the phone.
+ * [sessionId]/[baseRevision]/[incarnation] describe the session it was typed in; it is restored automatically only
+ * into a new session at exactly that base, otherwise the user exports or discards it.
+ */
+data class UnsavedInput(val articleId: Long, val title: String?, val body: String,
+    val sessionId: String?, val baseRevision: Long?, val incarnation: String?)
+
 data class ClientView(
     val paired: PairedPeer? = null,
     val pairingCode: String? = null,
@@ -62,6 +81,9 @@ data class ClientView(
     val decision: DecisionKind? = null,
     val decisionReason: RefusalReason? = null,
     val resubmitAllowed: Boolean = false,
+    val unsaved: UnsavedInput? = null,
+    /** Pairing data could not be read at start; pairing and connecting stay off until retried or reset. */
+    val pairingStoreProblem: PairingStoreProblem? = null,
     val message: String? = null
 )
 
@@ -92,6 +114,8 @@ class PcSyncClient(
     private var pairingResult: PairingResult? = null
     private var phoneConfirm: SyncMessage.PairConfirm? = null
     private var session: SyncMessage.SessionGrant? = null
+    /** The grant the editor was last opened under; stays set after the session ends to label late editor text. */
+    private var lastGrant: SyncMessage.SessionGrant? = null
     private var validityMillis = 0L
 
     private fun update(block: ClientView.() -> ClientView) { view = view.block() }
@@ -101,6 +125,7 @@ class PcSyncClient(
 
     /** The phone's pairing screen must be open first. */
     fun startPairing() {
+        checkPairingStore()
         drainPairingFiles()
         val p = PcPairing(peers.pcId, pcName).also { pairing = it }
         pairingResult = null; phoneConfirm = null
@@ -219,6 +244,7 @@ class PcSyncClient(
      * Never acquires editing while a pending edit's outcome needs a user decision.
      */
     fun connect() {
+        checkPairingStore()
         tick()
         val status = request { SyncMessage.StatusRequest(it) } as? SyncMessage.StatusReport ?: error("Unexpected reply")
         update { copy(phoneRevision = status.revision, decision = null, decisionReason = null, resubmitAllowed = false, message = null) }
@@ -294,7 +320,7 @@ class PcSyncClient(
             grant.requestNonce, grant.epoch)
         val accepted = if (rebaseline) controller.acceptFreshHistoryBaseline(local, pendingRequest) else controller.acceptGrant(local, pendingRequest)
         check(accepted == GrantAcceptanceResult.ACCEPTED)
-        session = grant; validityMillis = grant.validityMillis
+        session = grant; lastGrant = grant; validityMillis = grant.validityMillis
         val snapshot = request { SyncMessage.SnapshotRequest(it, grant.sessionId, grant.epoch) }
         if (snapshot !is SyncMessage.Snapshot || snapshot.sessionId != grant.sessionId || snapshot.epoch != grant.epoch ||
             snapshot.revision != grant.baseRevision || snapshot.datasetIncarnation != grant.datasetIncarnation) {
@@ -303,6 +329,27 @@ class PcSyncClient(
         controller.loadSyntheticSnapshot(snapshot.encode())
         update { copy(sessionActive = true, articles = snapshot.articles, phoneRevision = snapshot.revision,
             leaseRemainingMillis = controller.leaseRemainingMillis(), message = "編集できます（スマホ側の編集はロック中）") }
+        restoreUnsaved(grant, snapshot.articles)
+    }
+
+    /**
+     * Unsaved text from an earlier session goes back into the journal only when nothing on the phone moved since it
+     * was typed (same incarnation and base revision); otherwise it stays aside for export so it never overwrites.
+     */
+    private fun restoreUnsaved(grant: SyncMessage.SessionGrant, articles: List<ArticleSnapshot>) {
+        val u = view.unsaved ?: return
+        val sameBase = u.incarnation == grant.datasetIncarnation && u.baseRevision == grant.baseRevision &&
+            articles.any { it.articleId == u.articleId }
+        if (!sameBase) {
+            update { copy(message = "保存できなかった入力は、スマホのデータが変わったため自動では戻しません。テキストで保存してください") }
+            return
+        }
+        try {
+            store(u.articleId, u.title, u.body)
+            update { copy(unsaved = null, message = "保存できなかった入力を編集に戻し、暗号化保存しました") }
+        } catch (_: Exception) {
+            update { copy(message = "保存できなかった入力を戻せませんでした。テキストで保存してください") }
+        }
     }
 
     private fun renew() {
@@ -335,8 +382,26 @@ class PcSyncClient(
 
     // ---------------- editing ----------------
 
-    /** Autosave: encrypt and persist the editor text while the grant is live. One article edit at a time. */
+    /**
+     * Autosave: encrypt and persist the editor text while the grant is live. One article edit at a time.
+     * If it cannot be saved, the text is kept as [ClientView.unsaved] (memory only) so it is never silently dropped.
+     */
     fun saveDraft(articleId: Long, title: String?, body: String) {
+        val origin = lastGrant
+        val input = UnsavedInput(articleId, title, body, origin?.sessionId, origin?.baseRevision, origin?.datasetIncarnation)
+        try {
+            check(session != null) { "編集許可がないため保存できません" }
+            store(articleId, title, body)
+        } catch (failure: Exception) {
+            update { copy(unsaved = input, message = "最新の入力を暗号化保存できませんでした。画面上部からテキストで保存できます") }
+            throw failure
+        }
+        // Newer text of the same article in the same session supersedes earlier unsaved text; anything else stays aside.
+        val u = view.unsaved
+        if (u != null && u.articleId == articleId && u.sessionId == session?.sessionId) update { copy(unsaved = null) }
+    }
+
+    private fun store(articleId: Long, title: String?, body: String) {
         val current = controller.pending
         check(current == null || EditPayload.decode(current.syntheticDelta).articleId == articleId) { "別の記事の未反映の編集があります" }
         check(current?.submitted != true) { "提出済みの編集は変更できません" }
@@ -390,6 +455,11 @@ class PcSyncClient(
         if (it.result == poc.PendingQuarantineResult.QUARANTINED) { refreshPending(null); update { copy(decision = null) } }
     }
 
+    fun unsavedPlainText(): String? = view.unsaved?.let { (it.title?.let { t -> "$t\n\n" } ?: "") + it.body }
+
+    /** Explicit, confirmed by the UI: drop the in-memory unsaved text. The journal and the phone are untouched. */
+    fun discardUnsaved() { update { copy(unsaved = null, message = "保存できなかった入力を破棄しました") } }
+
     fun pendingPlainText(): String? = controller.pending?.let { EditPayload.decode(it.syntheticDelta) }
         ?.let { (it.title?.let { t -> "$t\n\n" } ?: "") + it.body }
 
@@ -414,5 +484,34 @@ class PcSyncClient(
     /** Remove the stored pairing key on this PC (the phone's entry is removed on the phone). */
     fun forgetPairing() { release(); peers.forget(); update { copy(paired = null) } }
 
-    fun initialize() { refreshPending(try { controller.pending } catch (_: Exception) { null }) }
+    fun initialize() {
+        refreshPending(try { controller.pending } catch (_: Exception) { null })
+        openPairingStore()
+    }
+
+    // ---------------- pairing data that cannot be read ----------------
+
+    private fun checkPairingStore() = check(view.pairingStoreProblem == null) { "ペアリング情報を読み取れていません" }
+
+    /** @return true when the pairing data is readable (or was created). */
+    fun openPairingStore(): Boolean = try {
+        peers.open()
+        update { copy(pairingStoreProblem = null, paired = peers.peer()) }
+        true
+    } catch (failure: PairingStoreUnavailableException) {
+        session = null
+        update { copy(pairingStoreProblem = failure.problem, paired = null, sessionActive = false, articles = emptyList()) }
+        false
+    }
+
+    /**
+     * Explicit and confirmed in the UI: keep the unreadable pairing file under another name and start unpaired.
+     * Pending edits and revision history are separate files and stay exactly as they are.
+     */
+    fun resetPairingStore() {
+        check(view.pairingStoreProblem != null) { "ペアリング情報は読み取れています" }
+        val kept = peers.moveAsideAndReset()
+        update { copy(pairingStoreProblem = null, paired = null,
+            message = "読めなかったペアリング情報を「$kept」として残しました。未反映の編集と履歴はそのままです。もう一度ペアリングしてください") }
+    }
 }

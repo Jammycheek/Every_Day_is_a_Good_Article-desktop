@@ -6,7 +6,9 @@ import everyarticle.sync.protocol.MailboxFile
 import everyarticle.sync.protocol.MailboxNames
 import everyarticle.sync.protocol.PairedPeer
 import everyarticle.sync.protocol.SyncCrypto
+import poc.DecryptionRejectedException
 import poc.DpapiProtector
+import poc.RecoveryFailureReason
 import poc.TransportState
 import poc.WindowsTransportReader
 import java.io.ByteArrayOutputStream
@@ -106,45 +108,88 @@ class WpdMailbox(private val helper: Path, private val selector: () -> String?) 
     }
 }
 
-/** PC identity and the paired phone key, DPAPI-protected (current Windows user only). */
-class ProtectedPcPeerStore(private val directory: Path, private val protector: DpapiProtector) : PcPeerStore {
+/**
+ * PC identity and the paired phone key, DPAPI-protected (current Windows user only).
+ * Nothing is read in the constructor: [open] reports failures as [PairingStoreUnavailableException] so the app can
+ * show them, retry, or (confirmed by the user) keep the unreadable file aside and pair again. Only files inside
+ * [directory] are touched; the pending-edit journal and revision history live elsewhere and are never changed here.
+ */
+class ProtectedPcPeerStore(
+    private val directory: Path,
+    private val transform: (ByteArray, Boolean) -> ByteArray,
+    private val wallMillis: () -> Long = System::currentTimeMillis
+) : PcPeerStore {
+    constructor(directory: Path, protector: DpapiProtector) : this(directory, protector::transform)
+
     private val file = directory.resolve("pairing.dpapi")
     private var cachedId: String? = null
     private var cachedPeer: PairedPeer? = null
 
-    init { Files.createDirectories(directory); load() }
-
-    override val pcId: String get() = cachedId!!
+    override val pcId: String get() = cachedId ?: throw IllegalStateException("Pairing store is not open")
     override fun peer() = cachedPeer
-    override fun save(peer: PairedPeer) { cachedPeer = peer; write() }
-    override fun forget() { cachedPeer = null; write() }
+    override fun save(peer: PairedPeer) { pcId; write(cachedId!!, peer); cachedPeer = peer }
+    override fun forget() { pcId; write(cachedId!!, null); cachedPeer = null }
 
-    private fun load() {
-        if (!Files.exists(file)) { cachedId = "pc-" + SyncCrypto.randomHex(8); write(); return }
-        val plain = protector.transform(Files.readAllBytes(file), false)
-        try {
-            DataInputStream(plain.inputStream()).use {
-                check(it.readInt() == 0x45415031) { "Unsupported pairing file" }
-                cachedId = it.readUTF()
-                cachedPeer = if (it.readBoolean()) {
-                    val id = it.readUTF(); val name = it.readUTF(); val key = ByteArray(32).also { k -> it.readFully(k) }
-                    PairedPeer(id, name, key)
-                } else null
-                check(it.read() == -1)
+    override fun open() {
+        cachedId = null; cachedPeer = null
+        val encrypted = try {
+            Files.createDirectories(directory)
+            if (!Files.exists(file)) {
+                val id = "pc-" + SyncCrypto.randomHex(8)
+                write(id, null); cachedId = id; return
             }
+            Files.readAllBytes(file)
+        } catch (failure: PairingStoreUnavailableException) { throw failure
+        } catch (failure: Exception) { throw unavailable(failure) }
+        val plain = try { transform(encrypted, false) } catch (failure: Exception) { throw unavailable(failure) }
+        try {
+            val (id, peer) = parse(plain)
+            cachedId = id; cachedPeer = peer
+        } catch (failure: Exception) {
+            throw PairingStoreUnavailableException(PairingStoreProblem.INVALID_FORMAT, failure)
         } finally { plain.fill(0) }
     }
 
-    private fun write() {
+    /**
+     * Confirmed by the user after [open] failed: rename the unreadable file (never delete it) and start over with a
+     * new PC identity and no pairing. Returns the name the old file was kept under.
+     */
+    override fun moveAsideAndReset(): String {
+        Files.createDirectories(directory)
+        val kept = directory.resolve("pairing-unreadable-${wallMillis()}.dpapi")
+        if (Files.exists(file)) Files.move(file, kept) // no REPLACE_EXISTING: an earlier kept file is never overwritten
+        cachedId = null; cachedPeer = null
+        val id = "pc-" + SyncCrypto.randomHex(8)
+        write(id, null); cachedId = id
+        return kept.fileName.toString()
+    }
+
+    private fun unavailable(failure: Exception) = PairingStoreUnavailableException(when (failure) {
+        is DecryptionRejectedException ->
+            if (failure.reason == RecoveryFailureReason.KEY_STATE) PairingStoreProblem.KEY_STATE else PairingStoreProblem.DATA_REJECTED
+        else -> PairingStoreProblem.TRANSIENT // helper unavailable/timeout, file locked or IO error: worth retrying
+    }, failure)
+
+    private fun parse(plain: ByteArray): Pair<String, PairedPeer?> = DataInputStream(plain.inputStream()).use {
+        check(it.readInt() == 0x45415031) { "Unsupported pairing file" }
+        val id = it.readUTF()
+        val peer = if (it.readBoolean()) {
+            val peerId = it.readUTF(); val name = it.readUTF(); val key = ByteArray(32).also { k -> it.readFully(k) }
+            PairedPeer(peerId, name, key)
+        } else null
+        check(it.read() == -1)
+        id to peer
+    }
+
+    private fun write(id: String, peer: PairedPeer?) {
         val buffer = ByteArrayOutputStream()
         DataOutputStream(buffer).use {
-            it.writeInt(0x45415031); it.writeUTF(cachedId!!)
-            val p = cachedPeer
-            it.writeBoolean(p != null)
-            if (p != null) { it.writeUTF(p.peerId); it.writeUTF(p.displayName); it.write(p.pairingKey) }
+            it.writeInt(0x45415031); it.writeUTF(id)
+            it.writeBoolean(peer != null)
+            if (peer != null) { it.writeUTF(peer.peerId); it.writeUTF(peer.displayName); it.write(peer.pairingKey) }
         }
         val plain = buffer.toByteArray()
-        val encrypted = try { protector.transform(plain, true) } finally { plain.fill(0) }
+        val encrypted = try { transform(plain, true) } catch (failure: Exception) { throw unavailable(failure) } finally { plain.fill(0) }
         val temporary = Files.createTempFile(directory, "pairing-", ".tmp")
         try {
             Files.write(temporary, encrypted)

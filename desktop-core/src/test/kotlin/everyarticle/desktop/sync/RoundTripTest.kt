@@ -90,12 +90,16 @@ class RoundTripTest {
         assertFalse(pc.view.sessionActive); assertTrue(pc.view.articles.isEmpty())
         assertEquals("切断前の下書き", pc.view.pending!!.body)
         assertFailsWith<IllegalStateException> { pc.saveDraft(1, "見出し", "切断後") }
+        assertEquals("切断前の下書き", pc.view.pending!!.body)
+        assertEquals("切断後", pc.view.unsaved!!.body, "text that could not be saved is kept aside, not dropped")
         advance(130_000); phone.poll(); gate.tick()
         transport = true; pc.tick()
-        pc.connect() // same base revision: editing resumes with the protected draft
-        assertTrue(pc.view.sessionActive)
+        pc.connect() // same base revision: editing resumes, and the newest text goes back into the protected draft
+        assertTrue(pc.view.sessionActive); assertNull(pc.view.unsaved)
+        assertEquals("切断後", pc.view.pending!!.body)
+        assertEquals("スマホの本文", store.article(1)!!.body, "restoring never sends anything")
         pc.submit()
-        assertEquals("切断前の下書き", store.article(1)!!.body)
+        assertEquals("切断後", store.article(1)!!.body)
     }
 
     @Test fun expiredSessionSubmitIsNotAppliedThenOnlyProvenResubmitIsAllowed() {
@@ -191,6 +195,155 @@ class RoundTripTest {
         pc.saveDraft(1, "見出し", "古い応答を無視")
         pc.submit()
         assertEquals("古い応答を無視", store.article(1)!!.body); assertNull(journal.edit)
+    }
+
+    // ---------- finding 1: the newest editor text is saved before release / switch / close, or kept aside ----------
+
+    private var workerView = ClientView()
+    private var closeState = CloseState.OPEN
+    private fun worker() = SyncWorker({ onChange ->
+        PcSyncClient("合成PC", DirectoryMailbox.forPc(root), pcPeers, RecoveryController(journal) { pcClock },
+            transportReady = { transport }, wallMillis = { phoneClock.wall },
+            sleep = { ms -> pcClock += ms; phoneClock.advance(ms); if (pcPolls) phone.poll() }, replyTimeoutMillis = 2_000,
+            sessionMillis = 120_000, safetyAllowanceMillis = 5_000, onChange = onChange)
+    }, onView = { workerView = it }, onCloseState = { closeState = it }, autosaveDelayMillis = 600_000, tickPeriodMillis = 0)
+
+    private fun journalBody() = EditPayload.decode(journal.edit!!.syntheticDelta).body
+
+    @Test fun releaseRightAfterTypingSavesTheNewestTextFirst() {
+        val w = worker()
+        w.run("接続") { connect() }; w.awaitIdle(); assertTrue(workerView.sessionActive)
+        w.editorChanged(EditorText(1, "見出し", "途中"))
+        w.editorChanged(EditorText(1, "見出し", "最後の入力")) // autosave has not fired yet
+        w.run("終了") { release() }; w.awaitIdle()
+        assertEquals("最後の入力", journalBody()); assertNull(workerView.unsaved); assertFalse(workerView.sessionActive)
+        w.shutdown()
+    }
+
+    @Test fun switchingArticlesSavesTheCurrentTextBeforeTheNextEditorStarts() {
+        val w = worker()
+        w.run("接続") { connect() }; w.awaitIdle()
+        w.editorChanged(EditorText(1, "見出し", "切り替え前の入力"))
+        w.flushNow()
+        w.editorChanged(EditorText(2, null, "別の記事")) // must not cancel the save above
+        w.run("終了") { release() }; w.awaitIdle()
+        assertEquals("切り替え前の入力", journalBody())
+        assertEquals(2L, workerView.unsaved?.articleId, "the other article's text is kept aside, not dropped")
+        w.shutdown()
+    }
+
+    @Test fun textTypedAfterExpiryIsKeptOutsideTheEditorAndRestoredAtTheSameBase() {
+        val w = worker()
+        w.run("接続") { connect(); saveDraft(1, "見出し", "保存済み") }; w.awaitIdle()
+        advance(130_000) // PC lease and phone lock both end before the autosave runs
+        w.editorChanged(EditorText(1, "見出し", "期限後の入力"))
+        w.run("確認") { tick() }; w.awaitIdle()
+        assertFalse(workerView.sessionActive)
+        assertEquals("期限後の入力", workerView.unsaved?.body); assertEquals("保存済み", journalBody())
+        w.run("接続") { connect() }; w.awaitIdle()
+        assertTrue(workerView.sessionActive); assertNull(workerView.unsaved)
+        assertEquals("期限後の入力", journalBody()); assertEquals("スマホの本文", store.article(1)!!.body)
+        w.shutdown()
+    }
+
+    @Test fun unsavedTextIsNotRestoredAfterThePhoneMovedOn() {
+        val w = worker()
+        w.run("接続") { connect() }; w.awaitIdle()
+        transport = false; advance(130_000)
+        w.editorChanged(EditorText(1, "見出し", "保存できなかった入力"))
+        w.run("確認") { tick() }; w.awaitIdle()
+        gate.tick(); gate.localWrite { store.localEdit(2, "スマホで別の記事を更新", phoneClock.wall) }
+        transport = true
+        w.run("接続") { connect() }; w.awaitIdle()
+        assertEquals("保存できなかった入力", workerView.unsaved?.body, "kept for export, never applied to a moved base")
+        assertNull(journal.edit); assertEquals("スマホの本文", store.article(1)!!.body)
+        assertEquals("保存できなかった入力", runCatching { var t: String? = null; w.run("書き出し") { t = unsavedPlainText() }; w.awaitIdle(); t }.getOrNull()?.substringAfter("\n\n"))
+        w.shutdown()
+    }
+
+    @Test fun closeSavesFirstAndIsBlockedOnlyByTextThatCannotBeSaved() {
+        val w = worker()
+        w.run("接続") { connect() }; w.awaitIdle()
+        w.editorChanged(EditorText(1, "見出し", "閉じる直前"))
+        w.requestClose(); w.awaitIdle()
+        assertEquals(CloseState.READY, closeState); assertEquals("閉じる直前", journalBody())
+        w.cancelClose()
+        w.editorChanged(EditorText(1, "見出し", "許可なしの入力")) // session already released by the close above
+        w.requestClose(); w.awaitIdle()
+        assertEquals(CloseState.BLOCKED_BY_UNSAVED, closeState); assertEquals("許可なしの入力", workerView.unsaved?.body)
+        w.closeDiscardingUnsaved(); w.awaitIdle()
+        assertEquals(CloseState.READY, closeState); assertNull(workerView.unsaved); assertEquals("閉じる直前", journalBody())
+        w.shutdown()
+    }
+
+    // ---------- finding 2: unreadable pairing data is handled on screen, never by losing edits ----------
+
+    private class FakeProtector {
+        var failRead: Exception? = null
+        fun transform(bytes: ByteArray, encrypt: Boolean): ByteArray {
+            if (!encrypt) failRead?.let { throw it }
+            return ByteArray(bytes.size) { (bytes[it].toInt() xor 0x5A).toByte() }
+        }
+    }
+
+    @Test fun unreadablePairingDataCanBeRetriedOrKeptAsideWithoutTouchingThePendingEdit() {
+        pc.connect(); pc.saveDraft(1, "見出し", "ペアリング情報が壊れる前の編集"); pc.release(); phone.poll()
+        val dir = kotlin.io.path.createTempDirectory("ea-pairing")
+        val protector = FakeProtector()
+        val firstStore = ProtectedPcPeerStore(dir, protector::transform) { 1_000 }
+        firstStore.open(); firstStore.save(pcPeers.peer()!!)
+        val originalBytes = java.nio.file.Files.readAllBytes(dir.resolve("pairing.dpapi"))
+
+        // Transient failure at start: shown, retried, nothing moved.
+        protector.failRead = poc.ProtectionUnavailableException()
+        val pairingStore = ProtectedPcPeerStore(dir, protector::transform) { 2_000 }
+        val restarted = PcSyncClient("合成PC", DirectoryMailbox.forPc(root), pairingStore, RecoveryController(journal) { pcClock },
+            transportReady = { transport }, wallMillis = { phoneClock.wall },
+            sleep = { ms -> pcClock += ms; phoneClock.advance(ms); phone.poll() }, replyTimeoutMillis = 2_000,
+            sessionMillis = 120_000, safetyAllowanceMillis = 5_000)
+        restarted.initialize() // must not throw
+        assertEquals(PairingStoreProblem.TRANSIENT, restarted.view.pairingStoreProblem)
+        assertEquals("ペアリング情報が壊れる前の編集", restarted.view.pending?.body, "pending edit still visible")
+        assertFailsWith<IllegalStateException> { restarted.connect() }
+        assertFailsWith<IllegalStateException> { restarted.startPairing() }
+        protector.failRead = null
+        assertTrue(restarted.openPairingStore()); assertNull(restarted.view.pairingStoreProblem)
+        assertEquals("phone-1", restarted.view.paired?.peerId)
+
+        // Permanent failure: confirmed reset keeps the file aside; the journal is untouched; pairing again works.
+        protector.failRead = poc.DecryptionRejectedException(poc.RecoveryFailureReason.KEY_STATE)
+        assertFalse(restarted.openPairingStore())
+        assertEquals(PairingStoreProblem.KEY_STATE, restarted.view.pairingStoreProblem)
+        val journalBefore = journal.edit
+        restarted.resetPairingStore()
+        protector.failRead = null
+        assertNull(restarted.view.pairingStoreProblem); assertNull(restarted.view.paired)
+        assertContentEquals(originalBytes, java.nio.file.Files.readAllBytes(dir.resolve("pairing-unreadable-2000.dpapi")))
+        assertNotEquals("pc-1", pairingStore.pcId)
+        assertSame(journalBefore, journal.edit)
+
+        phone.beginPairing()
+        restarted.startPairing(); phone.poll()
+        assertTrue(restarted.pollPairing()); phone.poll()
+        restarted.confirmPairingCode(); phone.poll()
+        phone.confirmPairingCode(); restarted.pollPairing()
+        assertEquals("phone-1", restarted.view.paired?.peerId)
+        restarted.tick(); restarted.connect()
+        assertTrue(restarted.view.sessionActive, restarted.view.message)
+        assertEquals("ペアリング情報が壊れる前の編集", restarted.view.pending?.body)
+        restarted.submit()
+        assertEquals("ペアリング情報が壊れる前の編集", store.article(1)!!.body)
+        dir.toFile().deleteRecursively()
+    }
+
+    @Test fun pairingDataWithABadFormatIsReportedAsSuch() {
+        val dir = kotlin.io.path.createTempDirectory("ea-pairing")
+        val protector = FakeProtector()
+        java.nio.file.Files.write(dir.resolve("pairing.dpapi"), protector.transform("not a pairing file".toByteArray(), true))
+        val store = ProtectedPcPeerStore(dir, protector::transform)
+        assertEquals(PairingStoreProblem.INVALID_FORMAT, assertFailsWith<PairingStoreUnavailableException> { store.open() }.problem)
+        assertFailsWith<IllegalStateException> { store.pcId }
+        dir.toFile().deleteRecursively()
     }
 
     @Test fun editPayloadRoundTrips() {
