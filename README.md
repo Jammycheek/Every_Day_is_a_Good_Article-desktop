@@ -1,6 +1,11 @@
 # Every_Day_is_a_Good_Article-desktop
 Windows-first desktop companion PoC. Kotlin Multiplatform core, Kotlin/JVM process boundary,
-Windows WPD/DPAPI helper and planned Compose Multiplatform UI. The phone remains authoritative.
+Windows WPD/DPAPI helper and a minimal Compose Multiplatform UI. The phone remains authoritative.
+
+- **[Sync protocol v1: one-edit round trip (public contract)](docs/SYNC-PROTOCOL-V1.md)**
+- [Hardware validation procedure for the round trip (not yet run)](docs/SYNC-HARDWARE-VALIDATION.md)
+- Modules: `protocol/` (platform-neutral protocol + reference phone rules), `desktop-core/` (PC sync client),
+  `desktop/` (Compose app; `-Deveryarticle.simulatedPhone=<dir>` runs a synthetic in-process phone on any OS)
 
 - [Transport validation plan](docs/POC-PLAN.md)
 - [PoC results and remaining work](docs/POC-RESULTS.md)
