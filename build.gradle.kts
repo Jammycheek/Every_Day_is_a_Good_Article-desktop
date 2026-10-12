@@ -26,3 +26,13 @@ fun registerRecoveryFixture(name: String, mode: String) = tasks.register<JavaExe
 val recoverySeed = registerRecoveryFixture("seedRecoverySmoke", "seed")
 val recoveryRead = registerRecoveryFixture("runRecoveryRestartSmoke", "recover")
 recoveryRead.configure { dependsOn(recoverySeed) }
+
+tasks.register<Jar>("pocCliJar") {
+    dependsOn("jvmMainClasses")
+    archiveFileName.set("poc-cli.jar")
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+    val target = kotlin.targets.getByName("jvm") as org.jetbrains.kotlin.gradle.targets.jvm.KotlinJvmTarget
+    val compilation = target.compilations.getByName("main")
+    from(compilation.output.allOutputs)
+    from(compilation.runtimeDependencyFiles.filter { it.extension == "jar" }.map { zipTree(it) })
+}

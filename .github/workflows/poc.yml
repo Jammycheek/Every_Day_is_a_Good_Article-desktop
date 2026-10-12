@@ -24,7 +24,7 @@ jobs:
         shell: pwsh
         run: |
           $env:POC_HELPER = Join-Path $PWD 'build/native/Release/wpd-probe.exe'
-          gradle --no-daemon jvmTest runRecoveryRestartSmoke
+          gradle --no-daemon jvmTest runRecoveryRestartSmoke pocCliJar
       - run: gradle --no-daemon runWindowsProbe -PprobeCommand=self-test
       - uses: actions/upload-artifact@v4
         with:
@@ -32,5 +32,7 @@ jobs:
           path: |
             build/native/Release/wpd-probe.exe
             docs/WINDOWS-PROBE.md
+            build/libs/poc-cli.jar
+            docs/TRANSPORT-SESSION-BRIDGE.md
           if-no-files-found: error
           retention-days: 7
