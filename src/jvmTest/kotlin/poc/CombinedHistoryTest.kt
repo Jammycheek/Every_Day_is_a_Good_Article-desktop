@@ -33,7 +33,8 @@ class CombinedHistoryTest {
             journal.recordVerifiedGrant(identity, 8, 10)
             assertEquals(20L, journal.verifiedEpoch(epochOnly))
             assertEquals(VerifiedHistoryEntry(null, 20), journal.verifiedHistoryEntries()[epochOnly])
-            assertContentEquals(legacyEpochBytes, Files.readAllBytes(dir.resolve("grant-epochs.dpapi")))
+            assertFalse(Files.exists(dir.resolve("grant-epochs.dpapi")))
+            assertContentEquals(legacyEpochBytes, Files.readAllBytes(Files.newDirectoryStream(dir, "grant-epochs-migrated-*").use { it.single() }))
             val preview = journal.prepareForgetHistory(identity)!!
             assertEquals(8L, preview.previousFloor); assertEquals(10L, preview.previousEpoch)
             assertTrue(preview.consequence.contains("generations"))
@@ -102,4 +103,60 @@ class CombinedHistoryTest {
             assertEquals(HistoryRecoveryResult.INVALID_CONFIRMATION, journal.recoverHistory(cancelled.confirmation))
         }
     }
+    @Test fun missingCombinedFileNeverReloadsForgottenLegacyEpochEvenAfterRestart() = trial { dir, protector ->
+        val old = legacy(protector, 0x45414531, mapOf(identity to 99L))
+        Files.write(dir.resolve("grant-epochs.dpapi"), old)
+        WindowsDeltaJournal(dir, protector).use { journal ->
+            journal.recordVerifiedGrant(identity, 7, 100)
+            journal.recoverHistory(journal.prepareForgetHistory(identity)!!.confirmation)
+        }
+        // Simulates leftover active legacy file after interrupted retirement/external restore.
+        Files.write(dir.resolve("grant-epochs.dpapi"), old)
+        Files.delete(dir.resolve("revision-floors.dpapi"))
+        WindowsDeltaJournal(dir, protector).use { journal ->
+            assertFailsWith<LegacyReimportBlockedException> { journal.verifiedEpoch(identity) }
+            val preview = journal.prepareQuarantineHistory()
+            assertEquals(RecoveryFailureReason.LEGACY_REIMPORT_BLOCKED, preview.reason)
+            assertEquals(HistoryRecoveryResult.RECOVERED, journal.recoverHistory(preview.confirmation))
+            assertNull(journal.verifiedEpoch(identity)); assertTrue(journal.historyRecoveryRequired(identity))
+            val pc = testController(journal); pc.observeTransport(true)
+            val request = pc.beginGrantRequest(identity, 0, 100, 0, rebaseline = true)
+            assertEquals(0L, request.minimumEpoch)
+            pc.acceptFreshHistoryBaseline(Grant(identity.device, "fake-restored", 1, 100,
+                identity.incarnation, request.requestNonce, 0), request, 1)
+        }
+    }
+    @Test fun failedMigrationRetainsLegacyBytesButRequiresConfirmedRecovery() = trial { dir, protector ->
+        val floors = legacy(protector, 0x45414631, mapOf(identity to 7L))
+        val epochs = legacy(protector, 0x45414531, mapOf(identity to 9L))
+        Files.write(dir.resolve("revision-floors.dpapi"), floors); Files.write(dir.resolve("grant-epochs.dpapi"), epochs)
+        val failing = DpapiProtector({ encrypt -> if (encrypt) listOf(dir.resolve("missing.exe").toString())
+            else listOf(System.getenv("POC_HELPER"), "unprotect") }, 15000)
+        WindowsDeltaJournal(dir, failing).use { journal ->
+            assertFailsWith<ProtectionUnavailableException> { journal.recordVerifiedGrant(identity, 8, 10) }
+            assertContentEquals(floors, Files.readAllBytes(dir.resolve("revision-floors.dpapi")))
+            assertContentEquals(epochs, Files.readAllBytes(dir.resolve("grant-epochs.dpapi")))
+        }
+        WindowsDeltaJournal(dir, protector).use { journal ->
+            assertFailsWith<LegacyReimportBlockedException> { journal.verifiedEpoch(identity) }
+            val preview = journal.prepareQuarantineHistory()
+            assertEquals(RecoveryFailureReason.LEGACY_REIMPORT_BLOCKED, preview.reason)
+            assertEquals(HistoryRecoveryResult.RECOVERED, journal.recoverHistory(preview.confirmation))
+            assertNull(journal.verifiedEpoch(identity))
+        }
+    }
+    @Test fun missingCombinedWithoutLegacyRequiresExplicitBaselineWithoutImportOrAutoGrant() = trial { dir, protector ->
+        WindowsDeltaJournal(dir, protector).use { it.recordVerifiedGrant(identity, 7, 9) }
+        Files.delete(dir.resolve("revision-floors.dpapi"))
+        WindowsDeltaJournal(dir, protector).use { journal ->
+            assertTrue(journal.historyIsIncomplete()); assertTrue(journal.historyRecoveryRequired(identity))
+            val pc = testController(journal); pc.observeTransport(true)
+            assertFails { pc.acceptFixtureGrant(FixtureGrant(identity.device, "fake-normal", 1, 100, identity.incarnation), 0) }
+            pc.acceptFixtureBaseline(FixtureGrant(identity.device, "fake-baseline", 1, 100, identity.incarnation), 1)
+            assertTrue(pc.canEdit(1)); assertEquals(1L, journal.revisionFloor(identity))
+            assertTrue(journal.historyIsIncomplete())
+            assertTrue(journal.historyRecoveryRequired(DatasetIdentity(identity.device, "fake-other")))
+        }
+    }
+
 }

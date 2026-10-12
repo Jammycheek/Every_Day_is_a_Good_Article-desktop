@@ -50,3 +50,7 @@ Use roundtrip-slow with the same explicit --synthetic-write 64k arguments. It wr
 Confirm the dedicated folder and connected phone first. Start the transfer, wait for transfer-written progress, then tell the user to unplug. Nonzero exit / timeout and no verified result is expected. Never auto-retry or claim rollback: device drivers can buffer writes or leave a partial file. After the user reconnects, reacquire device and folder IDs, inspect only the dedicated folder, and repeat the normal small roundtrip to check transport recovery. Leave test files for manual cleanup. This test covers synthetic transport failure, not durable application delta protection.
 
 The default launcher still fails on encrypted E:, but a C: execution path and local VS2019 build have been verified; E: is not used.
+
+## Binary recovery helper compatibility
+
+Replace poc-cli.jar and wpd-probe.exe together. Unprotect now uses exit 3 for data rejection and exit 4 for key-state hints, only after complete input with no output. Other failures are operational; no ciphertext/plaintext is logged. These statuses are hints, not proof of corruption or key recovery. EAF2 history is not readable by old jars; do not downgrade against a migrated recovery directory.

@@ -150,6 +150,19 @@ class RecoveryController @JvmOverloads constructor(private val journal: DeltaJou
         suspendSession(); discardPreview = null
         return historyCall { recoverHistory(confirmation) }
     }
+    val pendingHistoryIncomplete: Boolean get() = pendingQuarantineCall { pendingHistoryIncomplete() }
+    fun preparePendingQuarantine(): PendingQuarantinePreview? = pendingQuarantineCall { preparePendingQuarantine() }
+    fun cancelPendingQuarantine(confirmation: PendingQuarantineConfirmation) {
+        pendingQuarantineCall { cancelPendingQuarantine(confirmation) }
+    }
+    /** Explicit maintenance: no transport/grant required and never enables or replays editing. */
+    fun quarantinePending(confirmation: PendingQuarantineConfirmation): PendingQuarantineOutcome {
+        suspendSession(); discardPreview = null
+        return pendingQuarantineCall { quarantinePending(confirmation) }
+    }
+    private fun <T> pendingQuarantineCall(action: PendingQuarantineJournal.() -> T): T = try {
+        (journal as? PendingQuarantineJournal ?: error("Pending quarantine unsupported")).action()
+    } catch (failure: Exception) { suspendSession(); throw failure }
     private fun <T> historyCall(action: RevisionHistoryRecoveryJournal.() -> T): T = try {
         (journal as? RevisionHistoryRecoveryJournal ?: error("History recovery unsupported")).action()
     } catch (failure: Exception) { suspendSession(); throw failure }

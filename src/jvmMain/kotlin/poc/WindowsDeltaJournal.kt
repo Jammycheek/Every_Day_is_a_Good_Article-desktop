@@ -10,10 +10,13 @@ import java.nio.file.attribute.*
 import java.util.concurrent.*
 import java.util.UUID
 import java.security.SecureRandom
+import java.security.MessageDigest
 
 class ProtectionUnavailableException(cause: Throwable? = null) : IllegalStateException("Recovery protection temporarily unavailable", cause)
-class DecryptionRejectedException : IllegalStateException("Recovery ciphertext or key rejected")
-class StorageFormatException(cause: Throwable? = null) : IllegalStateException("Invalid recovery storage format", cause)
+class DecryptionRejectedException(val reason: RecoveryFailureReason = RecoveryFailureReason.DATA_REJECTED) : IllegalStateException("Recovery decryption rejected: $reason")
+open class StorageFormatException(cause: Throwable? = null) : IllegalStateException("Invalid recovery storage format", cause)
+
+class LegacyReimportBlockedException : StorageFormatException()
 
 class DpapiProtector internal constructor(private val command: (Boolean) -> List<String>, private val timeoutMillis: Long) {
     constructor(helper: Path) : this({ encrypt -> listOf(helper.toAbsolutePath().toString(),
@@ -59,7 +62,8 @@ class DpapiProtector internal constructor(private val command: (Boolean) -> List
             write.get(1, TimeUnit.SECONDS)
             val result = output.get(1, TimeUnit.SECONDS)
             val exit = process.exitValue()
-            if (!encrypt && exit == 3 && result.isEmpty()) throw DecryptionRejectedException()
+            if (!encrypt && (exit == 3 || exit == 4) && result.isEmpty())
+                throw DecryptionRejectedException(if (exit == 4) RecoveryFailureReason.KEY_STATE else RecoveryFailureReason.DATA_REJECTED)
             if (exit != 0 || result.isEmpty()) {
                 result.fill(0); throw ProtectionUnavailableException()
             }
@@ -80,13 +84,17 @@ class DpapiProtector internal constructor(private val command: (Boolean) -> List
 class JournalInUseException : IllegalStateException("Recovery directory is already in use")
 
 /** Owns one recovery directory until close/process exit. Callers must still serialize controller calls. */
-class WindowsDeltaJournal(private val directory: Path, private val protector: DpapiProtector) : RevisionHistoryRecoveryJournal, AutoCloseable {
+class WindowsDeltaJournal(private val directory: Path, private val protector: DpapiProtector) : RevisionHistoryRecoveryJournal, PendingQuarantineJournal, AutoCloseable {
     private val file = directory.resolve("pending.dpapi")
     private val floorFile = directory.resolve("revision-floors.dpapi")
     private val epochFile = directory.resolve("grant-epochs.dpapi")
     private val lockChannel: FileChannel
     private val directoryLock: FileLock
     private var closed = false
+    private val migrationMarker = directory.resolve("history-combined.marker")
+    private val pendingWarning = directory.resolve("pending-quarantined.warning")
+    private var pendingQuarantinePreview: PendingQuarantinePreview? = null
+    private var pendingFingerprint: CipherFingerprint? = null
     private val warningFile = directory.resolve("history-incomplete.warning")
     private var recoveryPreview: HistoryRecoveryPreview? = null
     private data class HistoryValue(val floor: Long?, val epoch: Long?)
@@ -120,7 +128,7 @@ class WindowsDeltaJournal(private val directory: Path, private val protector: Dp
     @Synchronized override fun close() {
         if (closed) return
         closed = true
-        invalidateRecoveryPreview()
+        invalidateRecoveryPreview(); invalidatePendingQuarantine()
         try { directoryLock.release() } finally { lockChannel.close() }
         // Never unlink the lock file: replacing its file identity could create two lock owners.
     }
@@ -201,7 +209,10 @@ class WindowsDeltaJournal(private val directory: Path, private val protector: Dp
             }
         }
         // This atomic replacement is authoritative. Legacy epoch bytes are retained, never re-imported.
+        // Mark before replacement: failures retain bytes but disable automatic legacy re-import.
+        if (!readMarker(migrationMarker)) writeMarker(migrationMarker)
         writeProtected(floorFile, buffer.toByteArray())
+        retireLegacyEpochs()
     }
     private fun invalidateRecoveryPreview() {
         recoveryPreview = null
@@ -229,17 +240,15 @@ class WindowsDeltaJournal(private val directory: Path, private val protector: Dp
     }
     @Synchronized override fun prepareQuarantineHistory(): HistoryRecoveryPreview {
         requireOwnership(); invalidateRecoveryPreview()
-        fun rejected(): Boolean = try { readHistory(); false }
-            catch (_: DecryptionRejectedException) { true }
-            catch (_: StorageFormatException) { true }
-        check(rejected()) { "Readable history requires identity-scoped forgetting" }
+        val first = failureReason { readHistory() } ?: error("Readable history requires identity-scoped forgetting")
         Thread.sleep(100)
-        check(rejected()) { "History is readable on retry; repair the helper or use scoped forgetting" }
+        val second = failureReason { readHistory() } ?: error("History is readable on retry")
+        val reason = if (first == second) first else RecoveryFailureReason.MIXED
         protector.requireAvailableEnvironment() // do not offer recovery when the current environment cannot round-trip
         previewSources = captureSources()
         check(previewSources.isNotEmpty())
         return HistoryRecoveryPreview(HistoryRecoveryKind.QUARANTINE_ALL, null, null,
-            HistoryRecoveryConfirmation()).also { recoveryPreview = it }
+            HistoryRecoveryConfirmation(), reason = reason).also { recoveryPreview = it }
     }
     @Synchronized override fun cancelHistoryRecovery(confirmation: HistoryRecoveryConfirmation) {
         requireOwnership()
@@ -287,11 +296,11 @@ class WindowsDeltaJournal(private val directory: Path, private val protector: Dp
     }
     @Synchronized override fun historyRecoveryRequired(identity: DatasetIdentity): Boolean {
         requireOwnership()
-        return readMarker(warningFile) && readHistory()[identity]?.floor == null
+        return historyIsIncomplete() && readHistory()[identity]?.floor == null
     }
-    @Synchronized override fun historyIsIncomplete(): Boolean { requireOwnership(); return readMarker(warningFile) }
+    @Synchronized override fun historyIsIncomplete(): Boolean { requireOwnership(); return readMarker(warningFile) || (readMarker(migrationMarker) && !hasRegularHistoryFile()) }
     @Synchronized override fun finishHistoryRebaseline(identity: DatasetIdentity) {
-        requireOwnership(); check(readMarker(warningFile)); check(readFloors()[identity] != null)
+        requireOwnership(); check(historyIsIncomplete() || readMarker(migrationMarker)); check(readFloors()[identity] != null)
         // Marker remains: baselining one identity must not unblock another lost/unknown identity.
     }
     private fun readMarker(path: Path): Boolean {
@@ -337,12 +346,32 @@ class WindowsDeltaJournal(private val directory: Path, private val protector: Dp
             } catch (failure: Exception) { throw StorageFormatException(failure) }
             finally { plain.fill(0) }
         }
-        if (combined) return floors // no resurrection of forgotten epochs from retained legacy ciphertext
+        if (combined) return floors
+        if (readMarker(migrationMarker)) {
+            if (encrypted != null || hasLegacyEpochFile()) throw LegacyReimportBlockedException()
+            if (!readMarker(warningFile)) writeMarker(warningFile) // missing combined history must remain a warning after one baseline
+            return emptyMap() // explicit quarantine/missing combined history: require fresh baseline
+        }
         val epochs = readLegacyEpochs()
         val keys = floors.keys + epochs.keys
         if (keys.size > 256) throw StorageFormatException()
         return keys.associateWith { HistoryValue(floors[it]?.floor, epochs[it]) }
     }
+    private fun hasRegularHistoryFile(): Boolean = regularFileExists(floorFile)
+    private fun hasLegacyEpochFile(): Boolean = regularFileExists(epochFile)
+    private fun regularFileExists(path: Path): Boolean {
+        val attributes = try { Files.readAttributes(path, BasicFileAttributes::class.java, LinkOption.NOFOLLOW_LINKS) }
+            catch (_: NoSuchFileException) { return false }
+        check(attributes.isRegularFile); return true
+    }
+    private fun retireLegacyEpochs() {
+        if (hasLegacyEpochFile()) Files.move(epochFile,
+            directory.resolve("grant-epochs-migrated-${UUID.randomUUID()}.dpapi"), StandardCopyOption.ATOMIC_MOVE)
+    }
+    private fun failureReason(read: () -> Any?): RecoveryFailureReason? = try { read(); null }
+        catch (failure: DecryptionRejectedException) { failure.reason }
+        catch (_: LegacyReimportBlockedException) { RecoveryFailureReason.LEGACY_REIMPORT_BLOCKED }
+        catch (_: StorageFormatException) { RecoveryFailureReason.INVALID_FORMAT }
     private fun readLegacyEpochs(): Map<DatasetIdentity, Long> {
         val encrypted = readEncrypted(epochFile) ?: return emptyMap()
         val plain = protector.transform(encrypted, false)
@@ -382,6 +411,97 @@ class WindowsDeltaJournal(private val directory: Path, private val protector: Dp
         } finally {
             encrypted.fill(0)
             Files.deleteIfExists(temporary)
+        }
+    }
+    private data class CipherFingerprint(val size: Long, val digest: String, val fileKey: Any?, val modified: FileTime)
+    private fun fingerprint(path: Path): CipherFingerprint? {
+        val before = try { Files.readAttributes(path, BasicFileAttributes::class.java, LinkOption.NOFOLLOW_LINKS) }
+            catch (_: NoSuchFileException) { return null }
+        check(before.isRegularFile) { "Ciphertext must be a regular file" }
+        val hash = MessageDigest.getInstance("SHA-256")
+        val chunk = ByteArray(8192); var size = 0L
+        try {
+            Files.newInputStream(path, LinkOption.NOFOLLOW_LINKS).use { input ->
+                while (true) {
+                    val count = input.read(chunk); if (count < 0) break
+                    hash.update(chunk, 0, count); size += count
+                }
+            }
+        } finally { chunk.fill(0) }
+        val after = Files.readAttributes(path, BasicFileAttributes::class.java, LinkOption.NOFOLLOW_LINKS)
+        check(after.isRegularFile && before.fileKey() == after.fileKey() && before.size() == size &&
+            after.size() == size && before.lastModifiedTime() == after.lastModifiedTime()) { "Ciphertext changed during inspection" }
+        return CipherFingerprint(size, hash.digest().joinToString("") { "%02x".format(it) }, after.fileKey(), after.lastModifiedTime())
+    }
+    private fun invalidatePendingQuarantine() { pendingQuarantinePreview = null; pendingFingerprint = null }
+    @Synchronized override fun preparePendingQuarantine(): PendingQuarantinePreview? {
+        requireOwnership(); invalidatePendingQuarantine()
+        val captured = fingerprint(file) ?: return null
+        val first = failureReason { load() } ?: error("Readable pending edits require discard/export, not quarantine")
+        Thread.sleep(100)
+        val second = failureReason { load() } ?: error("Pending edit is readable on retry")
+        protector.requireAvailableEnvironment()
+        check(fingerprint(file) == captured) { "Pending ciphertext changed during preview" }
+        val reason = if (first == second) first else RecoveryFailureReason.MIXED
+        return PendingQuarantinePreview(captured.size, reason, PendingQuarantineConfirmation()).also {
+            pendingQuarantinePreview = it; pendingFingerprint = captured
+        }
+    }
+    @Synchronized override fun cancelPendingQuarantine(confirmation: PendingQuarantineConfirmation) {
+        requireOwnership(); if (pendingQuarantinePreview?.confirmation === confirmation) invalidatePendingQuarantine()
+    }
+    @Synchronized override fun pendingHistoryIncomplete(): Boolean { requireOwnership(); return readMarker(pendingWarning) }
+    @Synchronized override fun quarantinePending(confirmation: PendingQuarantineConfirmation): PendingQuarantineOutcome {
+        requireOwnership()
+        val preview = pendingQuarantinePreview
+        if (preview == null || preview.confirmation !== confirmation)
+            return PendingQuarantineOutcome(PendingQuarantineResult.INVALID_CONFIRMATION)
+        val expected = pendingFingerprint!!; invalidatePendingQuarantine()
+        val current = fingerprint(file) ?: return PendingQuarantineOutcome(PendingQuarantineResult.NO_PENDING)
+        if (current != expected) return PendingQuarantineOutcome(PendingQuarantineResult.CHANGED)
+        protector.requireAvailableEnvironment()
+        // Key repair may make unchanged ciphertext readable while the user is confirming.
+        val reason = failureReason { load() } ?: return PendingQuarantineOutcome(PendingQuarantineResult.READABLE)
+        if (preview.reason != RecoveryFailureReason.MIXED && reason != preview.reason)
+            return PendingQuarantineOutcome(PendingQuarantineResult.CHANGED)
+        if (fingerprint(file) != expected) return PendingQuarantineOutcome(PendingQuarantineResult.CHANGED)
+        val archiveId = "pending-quarantine-${UUID.randomUUID()}.dpapi"
+        writeMarker(pendingWarning)
+        Files.move(file, directory.resolve(archiveId), StandardCopyOption.ATOMIC_MOVE)
+        return PendingQuarantineOutcome(PendingQuarantineResult.QUARANTINED, archiveId)
+    }
+    /** Export only retained ciphertext, no decryption/current-key requirement and no overwrite. */
+    @Synchronized fun exportPendingArchive(archiveId: String, destination: Path) {
+        requireOwnership()
+        require(Regex("pending-quarantine-[0-9a-f-]{36}\\.dpapi").matches(archiveId))
+        UUID.fromString(archiveId.removePrefix("pending-quarantine-").removeSuffix(".dpapi"))
+        val source = directory.resolve(archiveId)
+        val expected = fingerprint(source) ?: error("Archive missing")
+        val requested = destination.toAbsolutePath().normalize()
+        val parent = requested.parent.toRealPath()
+        check(parent != directory.toRealPath()) { "Export needs a separate existing local directory" }
+        // Resolve existing directory aliases once; never follow a destination-file link.
+        val target = parent.resolve(requested.fileName)
+        var created = false
+        try {
+            FileChannel.open(target, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE, LinkOption.NOFOLLOW_LINKS).use { output ->
+                created = true; restrict(target)
+                Files.newInputStream(source, LinkOption.NOFOLLOW_LINKS).use { input ->
+                    val chunk = ByteArray(8192)
+                    try {
+                        while (true) {
+                            val count = input.read(chunk); if (count < 0) break
+                            val buffer = ByteBuffer.wrap(chunk, 0, count)
+                            while (buffer.hasRemaining()) output.write(buffer)
+                        }
+                        output.force(true)
+                    } finally { chunk.fill(0) }
+                }
+            }
+            check(fingerprint(source) == expected && fingerprint(target)?.let { it.size == expected.size && it.digest == expected.digest } == true)
+        } catch (failure: Exception) {
+            if (created) runCatching { Files.deleteIfExists(target) }
+            throw failure
         }
     }
     @Synchronized override fun clear() { requireOwnership(); Files.deleteIfExists(file) }
