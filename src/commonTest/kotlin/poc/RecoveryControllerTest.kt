@@ -220,7 +220,7 @@ class RecoveryControllerTest {
         assertEquals(ReconciliationResult.NOT_THIS_OPERATION,
             pc.reconcileApplied(receipt(saved).copy(datasetInstance = "fake-dataset-v2")))
         assertEquals(saved, pc.pending); assertTrue(pc.canEdit(2)); assertTrue(pc.hasSnapshot)
-        assertTrue(journal.floors.isEmpty())
+        assertEquals(7L, journal.floors[DatasetIdentity("fake-phone", "fake-dataset-v1")])
         assertNotEquals(saved.contentDigest, saved.copy(metadata = saved.metadata.copy(datasetInstance = "fake-dataset-v2")).contentDigest)
     }
 
@@ -229,13 +229,25 @@ class RecoveryControllerTest {
         val saved = pc.pending!!; journal.failFloorSave = true
         assertFailsWith<IllegalStateException> { pc.reconcileApplied(receipt(saved)) }
         assertEquals(saved, pc.pending); assertFalse(pc.canEdit(2)); assertFalse(pc.hasSnapshot)
-        assertTrue(journal.floors.isEmpty())
+        assertEquals(7L, journal.floors[DatasetIdentity("fake-phone", "fake-dataset-v1")])
     }
 
     @Test fun floorReadFailureBlocksGrantAndSuspendsExistingSnapshot() {
         val journal = Journal(); val pc = ready(journal); journal.failFloorRead = true
         assertFailsWith<IllegalStateException> { pc.acceptGrant(Grant("fake-phone", "s2", 8, 200, "fake-dataset-v1"), 2) }
         assertFalse(pc.canEdit(2)); assertFalse(pc.hasSnapshot)
+    }
+
+    @Test fun acceptedGrantRevisionIsAlsoRetainedBeforeReportingPermission() {
+        val journal = Journal(); val pc = ready(journal); pc.suspendSession()
+        pc.acceptGrant(Grant("fake-phone", "newer", 10, 200, "fake-dataset-v1"), 2)
+        pc.suspendSession()
+        val restarted = RecoveryController(journal); restarted.observeTransport(true)
+        assertFailsWith<IllegalStateException> { restarted.acceptGrant(Grant("fake-phone", "older", 9, 200, "fake-dataset-v1"), 3) }
+        journal.failFloorSave = true
+        assertFailsWith<IllegalStateException> { restarted.acceptGrant(Grant("fake-phone", "write-failure", 11, 200, "fake-dataset-v1"), 3) }
+        assertFalse(restarted.canEdit(3)); assertFalse(restarted.hasSnapshot)
+        assertEquals(10L, journal.floors[DatasetIdentity("fake-phone", "fake-dataset-v1")])
     }
 
     @Test fun floorIsSavedBeforeClearAndNeverDecreasedByOlderAppliedOutcome() {

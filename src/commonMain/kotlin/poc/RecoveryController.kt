@@ -73,6 +73,12 @@ class RecoveryController(private val journal: DeltaJournal) {
         check(edit == null || (edit.metadata.device == grant.device && edit.metadata.baseRevision == grant.baseRevision &&
             edit.metadata.datasetInstance == grant.datasetInstance))
         gate.acceptGrant(grant, now)
+        try {
+            // Serialized calls: do not report the grant accepted until its verified revision is retained.
+            journal.recordAppliedRevision(identity, grant.baseRevision)
+        } catch (failure: Exception) {
+            suspendSession(); throw failure
+        }
     }
     fun loadSyntheticSnapshot(bytes: ByteArray, now: Long) {
         check(canEdit(now))
