@@ -77,3 +77,11 @@ Within a single running monitor, the user unplugged and then reconnected the pho
 - The local encrypted pending.dpapi file remained present (338 bytes); no plaintext payload or device identifiers are included here.
 
 This demonstrates real WPD polling driving PC mock-session revocation and snapshot release, without automatic renewal on reconnect. The monitor did not write phone files or apply/acknowledge the synthetic delta. A preceding monitor expired normally before reconnect, so that run is not used as evidence of same-process reconnect behavior. Polling can miss a brief unplug/replug between samples, and detection latency was not measured. Actual Android editing lock, authenticated grant renewal and application-level recovery remain unverified.
+
+## Live USB-mode change / PC mock-session bridge
+Using the same code and explicit mock-session fixture, the user left the cable connected and changed file transfer to charging only, then restored file transfer within one running monitor.
+- Initially: USB_MTP_READY, mock-can-edit=true, snapshot=true, pending=true.
+- Charging only: NONE, mock-can-edit=false, snapshot=false, pending=true.
+- File transfer restored: USB_MTP_READY, mock-can-edit=false, snapshot=false, pending=true.
+
+Observed MTP loss revoked the PC mock-session permission and released its synthetic snapshot. Restoring MTP did not renew permission or reload the snapshot; the pending synthetic delta remained recorded by the controller. Cable presence was user-confirmed rather than measured independently. No phone files were written and no Android application lock, grant or acknowledgement was exercised. The polling and private-channel limitations above still apply.
