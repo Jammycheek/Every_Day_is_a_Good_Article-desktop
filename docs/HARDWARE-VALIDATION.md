@@ -15,7 +15,12 @@
 Default sandbox launcher fails while enumerating an inaccessible encrypted virtual E: drive. An approved alternative execution path works from the C: workspace; the E: volume was not repaired, mounted, formatted or used for task files. Local execution is now available.
 
 ## Pending
-Synthetic transfer awaits an empty user-selected EveryArticle-PoC folder. No phone file has been written by this validation yet.
+Real-phone synthetic transfer passed after the user created and confirmed an empty EveryArticle-PoC folder. A differently cased name was rejected before creation; no write occurred in that rejected attempt.
+- 64 KiB fixture: 65536 bytes written, committed, read back and compared byte-for-byte; process exit 0.
+- Empty fixture: 0 bytes written, committed, read back and compared; process exit 0.
+- Both used uniquely named new files with a Unicode filename suffix, and emitted roundtrip-verified=1.
+- No existing phone files were modified or deleted. Two synthetic files remain in the dedicated folder for manual cleanup.
+- Transfer success is transport evidence only, not Android application apply/commit or editing-lock evidence.
 USB-mode switching, disconnect during transfer, denied access, multiple devices, screen locking, and private Android session integration remain unverified. Detection success does not prove any of those behaviors.
 
 ## Reference
