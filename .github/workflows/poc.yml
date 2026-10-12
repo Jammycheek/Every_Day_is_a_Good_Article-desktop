@@ -1,0 +1,44 @@
+name: PoC Windows checks
+on:
+  push:
+    branches: ['poc/**']
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.12.1'
+      - run: cmake -S native/windows -B build/native -A x64
+      - run: cmake --build build/native --config Release
+      - run: ctest --test-dir build/native -C Release --output-on-failure
+      - name: Session and encrypted recovery tests
+        shell: pwsh
+        run: |
+          $env:POC_HELPER = Join-Path $PWD 'build/native/Release/wpd-probe.exe'
+          gradle --no-daemon jvmTest runRecoveryRestartSmoke pocCliJar
+      - name: Compile manual synthetic hardware drivers (no device access)
+        shell: pwsh
+        run: |
+          $fixtureSources = @(Get-ChildItem tools/*.java | ForEach-Object FullName)
+          javac --release 17 -cp build/libs/poc-cli.jar -d build/manual-fixture-classes $fixtureSources
+          if ($LASTEXITCODE -ne 0) { throw 'Manual fixture compilation failed' }
+      - run: gradle --no-daemon runWindowsProbe -PprobeCommand=self-test
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wpd-probe-windows-x64
+          path: |
+            build/native/Release/wpd-probe.exe
+            docs/WINDOWS-PROBE.md
+            build/libs/poc-cli.jar
+            docs/TRANSPORT-SESSION-BRIDGE.md
+          if-no-files-found: error
+          retention-days: 7
