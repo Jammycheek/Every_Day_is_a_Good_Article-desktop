@@ -30,7 +30,7 @@ class TransportCoordinator(private val controller: RecoveryController, private v
     fun tick(now: Long) {
         val time = checkedAt
         if (time == null || now < time || now - time >= freshnessMillis) revoke()
-        controller.tick(now)
+        controller.tick()
     }
     fun stop() { revoke() }
     private fun revoke() {

@@ -1,4 +1,5 @@
 package poc
+import kotlin.jvm.JvmOverloads
 
 /** Null incarnation means a preserved legacy record, never an inferred dataset identity. */
 data class PendingEdit(val device: String, val baseRevision: Long, val operation: String,
@@ -65,10 +66,14 @@ interface DeltaJournal {
      * Complete before reporting grant acceptance or deleting pending recovery.
      */
     fun recordVerifiedRevision(identity: DatasetIdentity, revision: Long)
+    fun verifiedEpoch(identity: DatasetIdentity): Long?
+    fun recordVerifiedEpoch(identity: DatasetIdentity, epoch: Long)
+    /** Atomically retain both maxima before activating a grant. */
+    fun recordVerifiedGrant(identity: DatasetIdentity, revision: Long, epoch: Long)
 }
 
 /** Serialized calls only. Grants/receipts must already be authenticated by a future private channel. */
-class RecoveryController(private val journal: DeltaJournal) {
+class RecoveryController @JvmOverloads constructor(private val journal: DeltaJournal, private val clock: () -> Long = ::localMonotonicMillis) {
     private val gate = SessionGate()
     private var snapshot: ByteArray? = null
     private var discardPreview: PendingDiscardPreview? = null
@@ -79,40 +84,59 @@ class RecoveryController(private val journal: DeltaJournal) {
         gate.observeTransport(available)
         if (!available) releaseSnapshot()
     }
-    fun acceptGrant(grant: Grant, now: Long) {
-        acceptGrantInternal(grant, now, false)
+    fun beginGrantRequest(identity: DatasetIdentity, maximumDuration: Long, safetyAllowance: Long,
+        renewal: Boolean = false, rebaseline: Boolean = false): PendingGrantRequest {
+        val now = clock()
+        val live = canEditAt(now)
+        // A mistaken acquisition must not abandon a valid session or its pending renewal.
+        check(renewal || !live) { "Suspend before acquiring a new session" }
+        return try {
+            val epoch = journal.verifiedEpoch(identity)
+            val minimum = if (renewal) {
+                check(live); gate.grant!!.epoch
+            } else {
+                check(epoch != Long.MAX_VALUE) { "Epoch exhausted" }
+                (epoch ?: -1) + 1
+            }
+            gate.prepare(identity, now, maximumDuration, safetyAllowance, minimum, renewal, rebaseline)
+        } catch (failure: Exception) { suspendSession(); throw failure }
     }
-    /** Future caller MUST authenticate a new request/current revision, never reuse a cached grant.
-     * This explicit synthetic path is not authentication or evidence of current phone state.
-     */
-    fun acceptFreshHistoryBaseline(grant: Grant, now: Long) {
-        acceptGrantInternal(grant, now, true)
-    }
-    private fun acceptGrantInternal(grant: Grant, now: Long, rebaseline: Boolean) {
-        val edit = readJournal()
-        val identity = DatasetIdentity(grant.device, grant.datasetInstance)
-        val recovery = journal as? RevisionHistoryRecoveryJournal
-        val floor = try {
+    fun cancelGrantRequest(request: PendingGrantRequest) { gate.cancel(request) }
+    fun acceptGrant(grant: Grant, request: PendingGrantRequest): GrantAcceptanceResult =
+        acceptGrantInternal(grant, request, false)
+    /** An explicit local admission policy; authentication is still the carrier's responsibility. */
+    fun acceptFreshHistoryBaseline(grant: Grant, request: PendingGrantRequest): GrantAcceptanceResult =
+        acceptGrantInternal(grant, request, true)
+    private fun acceptGrantInternal(grant: Grant, request: PendingGrantRequest, rebaseline: Boolean): GrantAcceptanceResult {
+        // Do not consume the current request, read storage, or suspend on a delayed/unrelated reply.
+        if (!gate.matches(grant, request)) return GrantAcceptanceResult.IGNORED_UNRELATED
+        try {
+            val now = clock()
+            val expires = gate.validate(grant, request, now)
+            check(request.rebaseline == rebaseline)
+            val edit = readJournal()
+            val identity = DatasetIdentity(grant.device, grant.datasetInstance)
+            val recovery = journal as? RevisionHistoryRecoveryJournal
             val required = recovery?.historyRecoveryRequired(identity) == true
             check(required == rebaseline) { "History recovery requires an explicit fresh baseline" }
-            journal.revisionFloor(identity)
-        } catch (failure: Exception) {
-            suspendSession(); throw failure
-        }
-        check(floor == null || grant.baseRevision >= floor) { "Grant revision below verified floor" }
-        check(edit == null || (edit.metadata.device == grant.device && edit.metadata.baseRevision == grant.baseRevision &&
-            edit.metadata.datasetInstance == grant.datasetInstance))
-        gate.acceptGrant(grant, now)
-        try {
-            // Serialized calls: do not report the grant accepted until its verified revision is retained.
-            journal.recordVerifiedRevision(identity, grant.baseRevision)
+            val floor = journal.revisionFloor(identity)
+            check(floor == null || grant.baseRevision >= floor) { "Grant revision below verified floor" }
+            check(edit == null || (edit.metadata.device == grant.device && edit.metadata.baseRevision == grant.baseRevision &&
+                edit.metadata.datasetInstance == grant.datasetInstance))
+            val epoch = journal.verifiedEpoch(identity)
+            check(epoch == null || (if (request.kind == GrantRequestKind.RENEW) grant.epoch >= epoch else grant.epoch > epoch))
+            journal.recordVerifiedGrant(identity, grant.baseRevision, grant.epoch)
             if (rebaseline) recovery!!.finishHistoryRebaseline(identity)
-        } catch (failure: Exception) {
-            suspendSession(); throw failure
-        }
+            val completedAt = clock()
+            check(completedAt >= now)
+            if (request.kind == GrantRequestKind.RENEW) check(gate.canEdit(completedAt))
+            gate.activate(grant, expires, completedAt)
+            return GrantAcceptanceResult.ACCEPTED
+        } catch (failure: Exception) { suspendSession(); throw failure }
     }
     val revisionHistoryIncomplete: Boolean get() = historyCall { historyIsIncomplete() }
     fun revisionHistoryNeedsBaseline(identity: DatasetIdentity): Boolean = historyCall { historyRecoveryRequired(identity) }
+    fun verifiedHistoryEntries(): Map<DatasetIdentity, VerifiedHistoryEntry> = historyCall { verifiedHistoryEntries() }
     fun revisionHistoryEntries(): Map<DatasetIdentity, Long> = historyCall { revisionHistoryEntries() }
     fun prepareForgetRevisionHistory(identity: DatasetIdentity): HistoryRecoveryPreview? =
         historyCall { prepareForgetHistory(identity) }
@@ -129,21 +153,23 @@ class RecoveryController(private val journal: DeltaJournal) {
     private fun <T> historyCall(action: RevisionHistoryRecoveryJournal.() -> T): T = try {
         (journal as? RevisionHistoryRecoveryJournal ?: error("History recovery unsupported")).action()
     } catch (failure: Exception) { suspendSession(); throw failure }
-    fun loadSyntheticSnapshot(bytes: ByteArray, now: Long) {
-        check(canEdit(now))
+    fun loadSyntheticSnapshot(bytes: ByteArray) {
+        val now = clock()
+        check(canEditAt(now))
         releaseSnapshot()
         gate.loadSnapshot(now)
         snapshot = bytes.copyOf()
     }
-    fun canEdit(now: Long): Boolean {
+    fun canEdit(): Boolean = canEditAt(clock())
+    private fun canEditAt(now: Long): Boolean {
         val allowed = gate.canEdit(now)
         if (!allowed) releaseSnapshot()
         return allowed
     }
     /** Call periodically from an event loop to expire leases even when the user is idle. */
-    fun tick(now: Long) { canEdit(now) }
-    fun stage(operation: String, syntheticDelta: String, now: Long) {
-        check(canEdit(now) && hasSnapshot)
+    fun tick() { canEdit() }
+    fun stage(operation: String, syntheticDelta: String) {
+        check(canEdit() && hasSnapshot)
         check(readJournal() == null)
         require(operation.isNotBlank() && syntheticDelta.isNotEmpty())
         val grant = gate.grant!!

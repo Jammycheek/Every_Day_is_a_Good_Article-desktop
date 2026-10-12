@@ -60,7 +60,7 @@ class ProtectionFailureTest {
         val floors = Files.readAllBytes(dir.resolve("revision-floors.dpapi"))
         val pending = Files.readAllBytes(dir.resolve("pending.dpapi"))
         WindowsDeltaJournal(dir, protector(dir)).use {
-            val pc = RecoveryController(it)
+            val pc = testController(it)
             assertFailsWith<ProtectionUnavailableException> { pc.prepareQuarantineRevisionHistory() }
             assertFailsWith<ProtectionUnavailableException> { pc.pending }
             assertFalse(pc.canEdit(0)); assertFalse(pc.hasSnapshot)

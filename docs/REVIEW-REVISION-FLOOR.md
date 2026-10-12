@@ -1,5 +1,6 @@
 # Re-review N2: retained verified revision
 
+Historical PR #1 design record. PR #2 review follow-up extends this recovery to unified floor/epoch records; current semantics: REQUEST-BOUND-GRANTS.md.
 Synthetic public PoC only. After clearing an applied pending edit, the controller previously forgot the resulting revision and could accept a delayed older grant. It now retains a monotonic revision floor keyed by DatasetIdentity(application identity, dataset incarnation).
 
 ## Identity and accepted inputs

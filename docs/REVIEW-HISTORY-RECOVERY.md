@@ -1,5 +1,6 @@
 # Re-review R1: confirmed revision-history recovery
 
+Historical PR #1 design record. PR #2 review follow-up extends this recovery to unified floor/epoch records; current semantics: REQUEST-BOUND-GRANTS.md.
 Scope: synthetic public PoC under R2's exclusive recovery-directory ownership. A damaged/unreadable floor file, the 256-entry limit or an authoritative rollback with a reused incarnation could otherwise block PC editing indefinitely. Recovery now offers explicit identity-scoped forgetting and whole-file quarantine. Neither option proves the phone's state or automatically enables editing. S1 now excludes operational/helper failures from quarantine and requires a second classified data/key/format failure; see [REVIEW-FAILURE-CLASSIFICATION.md](REVIEW-FAILURE-CLASSIFICATION.md). This narrows the earlier unreadable-file scope described below.
 
 ## Choices and caller confirmation

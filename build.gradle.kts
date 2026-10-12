@@ -21,7 +21,7 @@ fun registerRecoveryFixture(name: String, mode: String) = tasks.register<JavaExe
     classpath = compilation.output.allOutputs + compilation.runtimeDependencyFiles
     mainClass.set("poc.RecoverySmoke")
     args(providers.environmentVariable("POC_HELPER").getOrElse("build/native/Release/wpd-probe.exe"),
-        layout.buildDirectory.dir("recovery-restart-smoke").get().asFile.absolutePath, mode)
+        layout.buildDirectory.dir("recovery-request-restart-smoke").get().asFile.absolutePath, mode)
 }
 val recoverySeed = registerRecoveryFixture("seedRecoverySmoke", "seed")
 val recoveryRead = registerRecoveryFixture("reconcileRecoverySmoke", "recover")

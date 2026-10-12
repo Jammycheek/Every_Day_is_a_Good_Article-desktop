@@ -7,12 +7,18 @@ data class HistoryRecoveryPreview(
     val kind: HistoryRecoveryKind,
     val identity: DatasetIdentity?,
     val previousFloor: Long?,
-    val confirmation: HistoryRecoveryConfirmation
+    val confirmation: HistoryRecoveryConfirmation,
+    val previousEpoch: Long? = null,
+    val consequence: String = "Forget revision and epoch history: older revisions and generations may be accepted after explicit rebaseline."
 )
+data class VerifiedHistoryEntry(val revisionFloor: Long?, val epoch: Long?)
+
 enum class HistoryRecoveryResult { RECOVERED, INVALID_CONFIRMATION, CHANGED }
 
 /** Optional protected-storage recovery adapter. Calls remain serialized under directory ownership. */
 interface RevisionHistoryRecoveryJournal : DeltaJournal {
+    /** Includes epoch-only legacy identities so the user can choose them for recovery. */
+    fun verifiedHistoryEntries(): Map<DatasetIdentity, VerifiedHistoryEntry>
     fun revisionHistoryEntries(): Map<DatasetIdentity, Long>
     fun prepareForgetHistory(identity: DatasetIdentity): HistoryRecoveryPreview?
     fun prepareQuarantineHistory(): HistoryRecoveryPreview

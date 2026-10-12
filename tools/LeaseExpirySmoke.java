@@ -5,7 +5,7 @@ import java.nio.file.Path;
 class LeaseExpirySmoke {
     static long now() { return System.nanoTime() / 1_000_000; }
     static void show(TransportCoordinator link, RecoveryController pc, boolean pending) {
-        System.out.println("transport=" + link.getState() + ";mock-can-edit=" + pc.canEdit(now())
+        System.out.println("transport=" + link.getState() + ";mock-can-edit=" + pc.canEdit()
             + ";snapshot=" + pc.getHasSnapshot() + ";pending=" + pending);
     }
     public static void main(String[] args) throws Exception {
@@ -20,8 +20,8 @@ class LeaseExpirySmoke {
             link.observe(++seq, reader.sample(), started, now());
             if (link.getState() != TransportState.USB_MTP_READY) throw new IllegalStateException("Transport not ready");
             long expires = now() + 15000;
-            pc.acceptGrant(new Grant("fake-monitor-phone", "mock-expiry-session", 1, expires, "fake-dataset-v1"), now());
-            pc.loadSyntheticSnapshot(new byte[]{1,2,3}, now());
+            MockGrantFixture.accept(pc, "fake-monitor-phone", "mock-expiry-session", 1, expires, "fake-dataset-v1", now());
+            pc.loadSyntheticSnapshot(new byte[]{1,2,3});
             show(link, pc, true);
             boolean expired = false;
             try {
@@ -30,14 +30,14 @@ class LeaseExpirySmoke {
                     link.observe(++seq, reader.sample(), started, now());
                     if (link.getState() != TransportState.USB_MTP_READY) throw new IllegalStateException("Transport loss confounds expiry");
                     link.tick(now());
-                    if (!expired && !pc.canEdit(now())) {
+                    if (!expired && !pc.canEdit()) {
                         if (now() < expires || pc.getHasSnapshot()) throw new IllegalStateException("Unexpected expiry state");
                         expired = true;
                         show(link, pc, true);
                     }
                     Thread.sleep(100);
                 }
-                if (!expired || pc.canEdit(now()) || pc.getHasSnapshot() || !before.equals(pc.getPending()))
+                if (!expired || pc.canEdit() || pc.getHasSnapshot() || !before.equals(pc.getPending()))
                     throw new IllegalStateException("Expiry or preservation failed");
                 System.out.println("lease-expiry-verified=1;pending-reloaded-equal=true");
             } finally { link.stop(); }

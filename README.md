@@ -5,6 +5,7 @@ Windows WPD/DPAPI helper and planned Compose Multiplatform UI. The phone remains
 - [Transport validation plan](docs/POC-PLAN.md)
 - [PoC results and remaining work](docs/POC-RESULTS.md)
 - [Application session contract proposal](docs/SESSION-CONTRACT-PROPOSAL.md)
+- [Request-bound synthetic grants, epochs and renewal](docs/REQUEST-BOUND-GRANTS.md)
 - [Review follow-up: applied receipt reconciliation](docs/REVIEW-RECONCILIATION.md)
 - [Review follow-up: persisted revision floors](docs/REVIEW-REVISION-FLOOR.md)
 - [Review follow-up: confirmed local pending discard](docs/REVIEW-PENDING-DISCARD.md)
@@ -19,6 +20,7 @@ Windows WPD/DPAPI helper and planned Compose Multiplatform UI. The phone remains
 
 Implemented: bounded synthetic WPD roundtrip, USB evidence, explicit lease gate,
 PC snapshot release and encrypted one-operation delta recovery. Reconnection alone never grants editing.
+Synthetic grants now require a one-use local request, matching nonce, durable epoch and a send-time duration deadline; renewal cannot revive an abandoned session. This is correlation validation, not an authenticated phone channel.
 The polling bridge revokes PC mock-session permission on observed transport loss; live unplug/reconnect verified no automatic renewal.
 Real-phone transfer, USB-mode changes, idle reconnect and interruption/recovery have been tested on one phone.
 DPAPI recovery tests use synthetic data only; no Android source or application data is included.
@@ -30,3 +32,5 @@ No production synchronization or real-data safety claim.
 JDK 17 + Gradle 8.12.1. Build native helper first, set POC_HELPER to its absolute path, run `gradle jvmTest`.
 `gradle runRecoveryRestartSmoke` verifies a synthetic delta and retained revision floor across three separate JVM processes.
 See Windows guide for local hardware commands. Do not publish raw device identifiers or directory listings.
+
+PR #2 review follow-up: [P1-P3 implementation and validation](docs/REVIEW-REQUEST-BOUND-FOLLOWUP.md). Verified floor/epoch history is unified; controller time is internal; unrelated grant replies preserve active editing.
