@@ -25,14 +25,14 @@ class RecoveryIdentityCheck {
                 rejected(() -> pc.recoveryCandidate("fake-monitor-phone", 2, "fake-dataset-v1"));
                 rejected(() -> MockGrantFixture.accept(pc, "different-fake-phone", "mock-mismatch", 1, now()+60000, "fake-dataset-v1", now()));
                 rejected(() -> MockGrantFixture.accept(pc, "fake-monitor-phone", "mock-mismatch", 2, now()+60000, "fake-dataset-v1", now()));
-                if (pc.canEdit(now()) || pc.getHasSnapshot()) throw new IllegalStateException("Mismatch enabled editing");
+                if (pc.canEdit() || pc.getHasSnapshot()) throw new IllegalStateException("Mismatch enabled editing");
                 System.out.println("wrong-device-rejected=true;wrong-revision-rejected=true;mock-can-edit=false;snapshot=false");
                 MockGrantFixture.accept(pc, "fake-monitor-phone", "mock-matching", 1, now()+60000, "fake-dataset-v1", now());
-                if (!pc.canEdit(now()) || pc.getHasSnapshot() || !expected.equals(pc.recoveryCandidate("fake-monitor-phone",1, "fake-dataset-v1")))
+                if (!pc.canEdit() || pc.getHasSnapshot() || !expected.equals(pc.recoveryCandidate("fake-monitor-phone",1, "fake-dataset-v1")))
                     throw new IllegalStateException("Explicit matching mock grant failed");
                 System.out.println("explicit-matching-mock-grant-accepted=true;snapshot=false;pending=true");
                 link.stop();
-                if (pc.canEdit(now()) || pc.getHasSnapshot() || !expected.equals(pc.getPending())
+                if (pc.canEdit() || pc.getHasSnapshot() || !expected.equals(pc.getPending())
                     || !Arrays.equals(before, Files.readAllBytes(directory.resolve("pending.dpapi"))))
                     throw new IllegalStateException("Pending preservation failed");
                 System.out.println("recovery-identity-verified=1;encrypted-journal-unchanged=true");

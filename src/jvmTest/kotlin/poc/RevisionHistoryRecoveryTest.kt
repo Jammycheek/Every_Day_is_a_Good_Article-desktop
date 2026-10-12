@@ -145,7 +145,7 @@ class RevisionHistoryRecoveryTest {
         WindowsDeltaJournal(dir, protector).use { journal ->
             journal.recordVerifiedRevision(identity, 10)
             val failing = object : RevisionHistoryRecoveryJournal by journal {
-                override fun recordVerifiedRevision(identity: DatasetIdentity, revision: Long) { error("Injected save failure") }
+                override fun recordVerifiedGrant(identity: DatasetIdentity, revision: Long, epoch: Long) { error("Injected save failure") }
             }
             val pc = testController(failing); pc.observeTransport(true)
             assertEquals(HistoryRecoveryResult.RECOVERED,

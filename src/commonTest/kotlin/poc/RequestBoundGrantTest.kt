@@ -9,6 +9,13 @@ class RequestBoundGrantTest {
         var epoch: Long? = null
         var failEpoch = false
         var failRevision = false
+        var afterSave: () -> Unit = {}
+        override fun recordVerifiedGrant(identity: DatasetIdentity, revision: Long, epoch: Long) {
+            check(!failEpoch && !failRevision)
+            this.revision = maxOf(this.revision ?: 0, revision)
+            this.epoch = maxOf(this.epoch ?: 0, epoch)
+            afterSave()
+        }
         override fun load() = edit
         override fun save(edit: RecoveryEdit) { this.edit = edit }
         override fun clear() { edit = null }
@@ -37,31 +44,47 @@ class RequestBoundGrantTest {
         for (at in listOf(90L, 91L)) {
             val pc = ready(); val r = request(pc)
             assertFails { pc.acceptGrant(reply(r), r, at) }
-            assertFails { pc.acceptGrant(reply(r), r, at) }
+            assertEquals(GrantAcceptanceResult.IGNORED_UNRELATED, pc.acceptGrant(reply(r), r, at))
             assertFalse(pc.canEdit(at)); assertFalse(pc.hasSnapshot)
         }
     }
-    @Test fun wrongNonceConsumesAttemptAndCorrectedReplyCannotReuseIt() {
+    @Test fun wrongNonceIsIgnoredWithoutConsumingTheCorrectRequest() {
         val pc = ready(); val r = request(pc)
-        assertFails { pc.acceptGrant(reply(r).copy(requestNonce = "other-request"), r, 1) }
-        assertFails { pc.acceptGrant(reply(r), r, 2) }; assertFalse(pc.canEdit(2))
+        assertEquals(GrantAcceptanceResult.IGNORED_UNRELATED, pc.acceptGrant(reply(r).copy(requestNonce = "other-request"), r, 1))
+        assertEquals(GrantAcceptanceResult.ACCEPTED, pc.acceptGrant(reply(r), r, 2)); assertTrue(pc.canEdit(2))
     }
-    @Test fun replacementCancellationForeignCapabilityAndRestartInvalidateRequests() {
+    @Test fun replacementCancellationForeignCapabilityAndRestartIgnoreOldReplies() {
         val j = Journal(); val pc = ready(j); val first = request(pc); val second = request(pc)
         assertNotEquals(first.requestNonce, second.requestNonce)
-        assertFails { pc.acceptGrant(reply(first), first, 1) }
-        assertFails { pc.acceptGrant(reply(second), second, 2) } // failure suspends all outstanding work
+        assertEquals(GrantAcceptanceResult.IGNORED_UNRELATED, pc.acceptGrant(reply(first), first, 1))
+        assertEquals(GrantAcceptanceResult.ACCEPTED, pc.acceptGrant(reply(second), second, 2))
+        pc.suspendSession()
         val cancelled = request(pc, 3); pc.cancelGrantRequest(cancelled)
-        assertFails { pc.acceptGrant(reply(cancelled), cancelled, 4) }
+        assertEquals(GrantAcceptanceResult.IGNORED_UNRELATED, pc.acceptGrant(reply(cancelled), cancelled, 4))
         val foreign = request(ready(), 5)
-        assertFails { pc.acceptGrant(reply(foreign), foreign, 5) }
+        assertEquals(GrantAcceptanceResult.IGNORED_UNRELATED, pc.acceptGrant(reply(foreign), foreign, 5))
         val beforeRestart = request(pc, 6)
-        assertFails { ready(j).acceptGrant(reply(beforeRestart), beforeRestart, 6) }
+        assertEquals(GrantAcceptanceResult.IGNORED_UNRELATED, ready(j).acceptGrant(reply(beforeRestart), beforeRestart, 6))
     }
-    @Test fun acceptedRequestIsOneUseEvenAfterExplicitSuspension() {
+    @Test fun acceptedRequestIsIgnoredAfterExplicitSuspension() {
         val pc = ready(); val r = request(pc)
         pc.acceptGrant(reply(r), r, 1); pc.suspendSession()
-        assertFails { pc.acceptGrant(reply(r), r, 2) }; assertFalse(pc.canEdit(2))
+        assertEquals(GrantAcceptanceResult.IGNORED_UNRELATED, pc.acceptGrant(reply(r), r, 2)); assertFalse(pc.canEdit(2))
+    }
+    @Test fun duplicateRenewalAndMistakenAcquisitionPreserveSnapshotAndPendingRenewal() {
+        val pc = ready(); val r = request(pc); pc.acceptGrant(reply(r), r, 1)
+        pc.loadSyntheticSnapshot(byteArrayOf(1), 1)
+        val renew = request(pc, 50, true)
+        assertFails { request(pc, 51) }
+        assertTrue(pc.hasSnapshot); assertTrue(pc.canEdit(51))
+        assertEquals(GrantAcceptanceResult.ACCEPTED, pc.acceptGrant(reply(renew), renew, 60))
+        assertEquals(GrantAcceptanceResult.IGNORED_UNRELATED, pc.acceptGrant(reply(renew), renew, 61))
+        assertTrue(pc.hasSnapshot); assertTrue(pc.canEdit(61))
+        val next = request(pc, 70, true)
+        assertEquals(GrantAcceptanceResult.IGNORED_UNRELATED, pc.acceptGrant(reply(renew), renew, 71))
+        assertEquals(GrantAcceptanceResult.IGNORED_UNRELATED, pc.acceptGrant(reply(next).copy(requestNonce = r.requestNonce), next, 72))
+        assertTrue(pc.hasSnapshot); assertTrue(pc.canEdit(72))
+        assertEquals(GrantAcceptanceResult.ACCEPTED, pc.acceptGrant(reply(next), next, 73)); assertTrue(pc.hasSnapshot)
     }
     @Test fun wrongIdentityIncarnationDurationAndNegativeEpochAreRejected() {
         val invalid: List<(Grant) -> Grant> = listOf(
@@ -90,19 +113,18 @@ class RequestBoundGrantTest {
         val pc = ready(j); val r = request(pc)
         assertFails { pc.acceptGrant(reply(r), r, 1) }; assertFalse(pc.canEdit(1)); assertNull(j.epoch)
     }
-    @Test fun revisionFailureAfterEpochSaveKeepsEpochAndRequiresNewAcquisition() {
+    @Test fun atomicHistoryFailureKeepsBothMaximaAndRequiresNewRequest() {
         val j = Journal(); j.failRevision = true
         val pc = ready(j); val r = request(pc)
         assertFails { pc.acceptGrant(reply(r, epoch = 9), r, 1) }
-        assertEquals(9L, j.epoch); assertFalse(pc.canEdit(1))
+        assertNull(j.epoch); assertNull(j.revision); assertFalse(pc.canEdit(1))
         j.failRevision = false
-        val next = request(pc, 2); assertEquals(10L, next.minimumEpoch)
+        val next = request(pc, 2); assertEquals(0L, next.minimumEpoch)
         pc.acceptGrant(reply(next), next, 3); assertTrue(pc.canEdit(3))
     }
     @Test fun blockedStorageCannotActivateAnAlreadyExpiredGrant() {
-        var clock = 0L
-        val pc = RecoveryController(Journal()) { clock.also { clock += 100 } }
-        pc.observeTransport(true); val r = request(pc)
+        val journal = Journal(); val pc = ready(journal)
+        journal.afterSave = { pc.setTestTime(101) }; val r = request(pc)
         assertFails { pc.acceptGrant(reply(r), r, 1) }; assertFalse(pc.canEdit(101))
     }
     @Test fun renewalRetainsSnapshotAndEpochWithASeparatelyBoundRequest() {
@@ -119,7 +141,8 @@ class RequestBoundGrantTest {
             val renew = request(pc, 50, true)
             if (mode == 1) pc.suspendSession()
             if (mode == 2) { pc.observeTransport(false); pc.observeTransport(true) }
-            assertFails { pc.acceptGrant(reply(renew), renew, if (mode == 0) 90 else 60) }
+            if (mode == 0) assertFails { pc.acceptGrant(reply(renew), renew, 90) }
+            else assertEquals(GrantAcceptanceResult.IGNORED_UNRELATED, pc.acceptGrant(reply(renew), renew, 60))
             assertFalse(pc.canEdit(100))
         }
     }
@@ -133,12 +156,10 @@ class RequestBoundGrantTest {
         }
     }
     @Test fun storageCrossingTheOldDeadlineCannotReviveByRenewal() {
-        var delayed = false; var clock = 0L
-        val pc = RecoveryController(Journal()) { clock.also { if (delayed) clock += 50 } }
-        pc.observeTransport(true); val r = request(pc)
+        val journal = Journal(); val pc = ready(journal); val r = request(pc)
         pc.acceptGrant(reply(r), r, 1); pc.loadSyntheticSnapshot(byteArrayOf(1), 1)
-        val renew = request(pc, 50, true); delayed = true
-        assertFails { pc.acceptGrant(reply(renew), renew, 60) } // completed at 110: old=90, new=140
+        val renew = request(pc, 50, true); journal.afterSave = { pc.setTestTime(110) }
+        assertFails { pc.acceptGrant(reply(renew), renew, 60) }
         assertFalse(pc.hasSnapshot); assertFalse(pc.canEdit(110))
     }
     @Test fun expiryRequiresFreshHigherEpochAcquisitionAndNewSnapshot() {
@@ -149,6 +170,19 @@ class RequestBoundGrantTest {
         assertEquals(1L, next.minimumEpoch)
         pc.acceptGrant(reply(next), next, 101)
         assertTrue(pc.canEdit(101)); assertFalse(pc.hasSnapshot)
+    }
+    @Test fun phoneMayChooseEpochFarAboveTheRequestedMinimum() {
+        val j = Journal(); val pc = ready(j); val r = request(pc)
+        assertEquals(0L, r.minimumEpoch)
+        pc.acceptGrant(reply(r, epoch = 1_000_000), r, 1); pc.suspendSession()
+        assertEquals(1_000_001L, request(pc, 2).minimumEpoch)
+    }
+    @Test fun queuedEventReadsExecutionTimeFromTheControllerClock() {
+        val pc = ready(); val r = request(pc, 10); pc.acceptGrant(reply(r), r, 20)
+        pc.loadSyntheticSnapshot(byteArrayOf(1), 20)
+        val queuedCheck = { pc.canEdit() }
+        pc.setTestTime(21); pc.tick(); assertTrue(queuedCheck()); assertTrue(pc.hasSnapshot)
+        pc.setTestTime(100); assertFalse(queuedCheck()); assertFalse(pc.hasSnapshot)
     }
     @Test fun durationOverflowExhaustedEpochAndClockRollbackFailClosed() {
         val pc = ready()

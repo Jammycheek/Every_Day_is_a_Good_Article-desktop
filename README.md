@@ -32,3 +32,5 @@ No production synchronization or real-data safety claim.
 JDK 17 + Gradle 8.12.1. Build native helper first, set POC_HELPER to its absolute path, run `gradle jvmTest`.
 `gradle runRecoveryRestartSmoke` verifies a synthetic delta and retained revision floor across three separate JVM processes.
 See Windows guide for local hardware commands. Do not publish raw device identifiers or directory listings.
+
+PR #2 review follow-up: [P1-P3 implementation and validation](docs/REVIEW-REQUEST-BOUND-FOLLOWUP.md). Verified floor/epoch history is unified; controller time is internal; unrelated grant replies preserve active editing.

@@ -78,10 +78,11 @@ class WindowsDeltaJournalTest {
             val pc = testController(journal); pc.observeTransport(true)
             pc.acceptFixtureGrant(FixtureGrant("fake-phone", "s1", 8, 100, "fake-dataset-v1"), 0)
             pc.loadSyntheticSnapshot(byteArrayOf(1), 0)
+            val request = pc.beginGrantRequest(DatasetIdentity("fake-phone", "fake-dataset-v1"), 1, 100, 0, renewal = true)
             val file = directory.resolve("revision-floors.dpapi")
             val damaged = Files.readAllBytes(file); damaged[damaged.lastIndex] = (damaged.last().toInt() xor 0xff).toByte()
             Files.write(file, damaged)
-            assertFails { pc.acceptFixtureGrant(FixtureGrant("fake-phone", "s2", 9, 100, "fake-dataset-v1"), 1) }
+            assertFails { pc.acceptGrant(Grant("fake-phone", "s1", 8, 100, "fake-dataset-v1", request.requestNonce, request.minimumEpoch), request, 1) }
             assertFalse(pc.canEdit(1)); assertFalse(pc.hasSnapshot)
             assertContentEquals(damaged, Files.readAllBytes(file))
         } finally {

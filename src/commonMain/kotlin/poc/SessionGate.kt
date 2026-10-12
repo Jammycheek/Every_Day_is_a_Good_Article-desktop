@@ -11,6 +11,7 @@ data class Grant(val device: String, val session: String, val baseRevision: Long
     val datasetInstance: String, val requestNonce: String, val epoch: Long)
 
 enum class GrantRequestKind { ACQUIRE, RENEW }
+enum class GrantAcceptanceResult { ACCEPTED, IGNORED_UNRELATED }
 /** Local capability: never reconstructed from a peer message or persisted across restart. */
 class PendingGrantRequest internal constructor(val identity: DatasetIdentity, val requestNonce: String,
     val sentAt: Long, val maximumDuration: Long, val safetyAllowance: Long, val minimumEpoch: Long,
@@ -74,6 +75,9 @@ internal class SessionGate {
         } else check(grant == null)
         return expires
     }
+    /** Correlation only; the carrier must authenticate replies before dispatch. */
+    fun matches(value: Grant, request: PendingGrantRequest): Boolean =
+        pending === request && value.requestNonce == request.requestNonce
     fun activate(value: Grant, expires: Long, now: Long) {
         observeTime(now)
         require(transportAvailable && now < expires)

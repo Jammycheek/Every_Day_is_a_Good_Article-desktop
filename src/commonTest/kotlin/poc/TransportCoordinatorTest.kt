@@ -7,6 +7,9 @@ class TransportCoordinatorTest {
         private val floors = mutableMapOf<DatasetIdentity, Long>()
         private val epochs = mutableMapOf<DatasetIdentity, Long>()
         override fun verifiedEpoch(identity: DatasetIdentity) = epochs[identity]
+        override fun recordVerifiedGrant(identity: DatasetIdentity, revision: Long, epoch: Long) {
+            recordVerifiedRevision(identity, revision); recordVerifiedEpoch(identity, epoch)
+        }
         override fun recordVerifiedEpoch(identity: DatasetIdentity, epoch: Long) { epochs[identity] = maxOf(epochs[identity] ?: 0, epoch) }
         override fun load() = edit
         override fun save(edit: RecoveryEdit) { this.edit = edit }
@@ -52,7 +55,7 @@ class TransportCoordinatorTest {
     @Test fun grantExpiresWhileTransportRemainsReady() {
         val pc = testController(Journal()); val link = TransportCoordinator(pc)
         link.observe(1, ready, 0, 0); pc.acceptFixtureGrant(FixtureGrant("fake-app", "s1", 1, 10, "fake-dataset-v1"), 0)
-        pc.loadSyntheticSnapshot(byteArrayOf(1), 0); link.tick(10)
+        pc.loadSyntheticSnapshot(byteArrayOf(1), 0); pc.setTestTime(10); link.tick(10)
         assertEquals(TransportState.USB_MTP_READY, link.state)
         assertFalse(pc.canEdit(10)); assertFalse(pc.hasSnapshot)
     }

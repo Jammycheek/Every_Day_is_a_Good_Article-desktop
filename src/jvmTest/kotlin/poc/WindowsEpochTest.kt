@@ -20,7 +20,7 @@ class WindowsEpochTest {
     @Test fun protectedEpochSurvivesRestartRejectsEqualOrOlderAndNeverDecreases() = trial { dir, protector ->
         WindowsDeltaJournal(dir, protector).use {
             val pc = testController(it); pc.observeTransport(true); accept(pc, 9); pc.suspendSession()
-            val path = dir.resolve("grant-epochs.dpapi"); val bytes = Files.readAllBytes(path)
+            val path = dir.resolve("revision-floors.dpapi"); val bytes = Files.readAllBytes(path)
             it.recordVerifiedEpoch(identity, 8)
             assertContentEquals(bytes, Files.readAllBytes(path))
             assertEquals(1, Files.getFileAttributeView(path, java.nio.file.attribute.AclFileAttributeView::class.java).acl.size)
@@ -32,14 +32,14 @@ class WindowsEpochTest {
             assertEquals(10L, it.verifiedEpoch(identity))
         }
     }
-    @Test fun revisionHistoryForgettingDoesNotForgetEpochAndBaselineUsesSameValidation() = trial { dir, protector ->
+    @Test fun confirmedHistoryForgettingResetsBothDefencesAndBaselineUsesSameValidation() = trial { dir, protector ->
         WindowsDeltaJournal(dir, protector).use {
             val pc = testController(it); pc.observeTransport(true); accept(pc, 9); pc.suspendSession()
             pc.recoverRevisionHistory(pc.prepareForgetRevisionHistory(identity)!!.confirmation)
-            assertEquals(9L, it.verifiedEpoch(identity)); assertTrue(pc.revisionHistoryNeedsBaseline(identity))
-            assertFails { accept(pc, 9, 3, true) }
-            accept(pc, 10, 3, true); pc.suspendSession()
-            assertEquals(3L, it.revisionFloor(identity)); assertEquals(10L, it.verifiedEpoch(identity))
+            assertNull(it.verifiedEpoch(identity)); assertTrue(pc.revisionHistoryNeedsBaseline(identity))
+            assertFails { accept(pc, 0, 3) } // explicit rebaseline required after losing both defences
+            accept(pc, 0, 3, true); pc.suspendSession()
+            assertEquals(3L, it.revisionFloor(identity)); assertEquals(0L, it.verifiedEpoch(identity))
             assertTrue(pc.revisionHistoryIncomplete)
         }
     }
@@ -48,8 +48,8 @@ class WindowsEpochTest {
             it.recordVerifiedRevision(identity, 7)
             it.save(RecoveryEdit(PendingEdit(identity.device, 7, "fake-op", identity.incarnation), "SYNTHETIC"))
             val pending = Files.readAllBytes(dir.resolve("pending.dpapi"))
+            Files.write(dir.resolve("revision-floors.dpapi"), byteArrayOf(1, 2, 3, 4))
             val floors = Files.readAllBytes(dir.resolve("revision-floors.dpapi"))
-            Files.write(dir.resolve("grant-epochs.dpapi"), byteArrayOf(1, 2, 3, 4))
             val pc = testController(it); pc.observeTransport(true)
             assertFailsWith<DecryptionRejectedException> { pc.beginGrantRequest(identity, 0, 100, 0) }
             assertFalse(pc.canEdit(0)); assertFalse(it.historyIsIncomplete())

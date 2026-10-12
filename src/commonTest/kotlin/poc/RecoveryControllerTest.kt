@@ -12,6 +12,9 @@ class RecoveryControllerTest {
         val floors = mutableMapOf<DatasetIdentity, Long>()
         private val epochs = mutableMapOf<DatasetIdentity, Long>()
         override fun verifiedEpoch(identity: DatasetIdentity) = epochs[identity]
+        override fun recordVerifiedGrant(identity: DatasetIdentity, revision: Long, epoch: Long) {
+            recordVerifiedRevision(identity, revision); recordVerifiedEpoch(identity, epoch)
+        }
         override fun recordVerifiedEpoch(identity: DatasetIdentity, epoch: Long) { epochs[identity] = maxOf(epochs[identity] ?: 0, epoch) }
         override fun load(): RecoveryEdit? { check(!failRead); return edit }
         override fun save(edit: RecoveryEdit) { check(!failSave); this.edit = edit }
@@ -236,8 +239,11 @@ class RecoveryControllerTest {
     }
 
     @Test fun floorReadFailureBlocksGrantAndSuspendsExistingSnapshot() {
-        val journal = Journal(); val pc = ready(journal); journal.failFloorRead = true
-        assertFailsWith<IllegalStateException> { pc.acceptFixtureGrant(FixtureGrant("fake-phone", "s2", 8, 200, "fake-dataset-v1"), 2) }
+        val journal = Journal(); val pc = ready(journal)
+        val request = pc.beginGrantRequest(DatasetIdentity("fake-phone", "fake-dataset-v1"), 1, 200, 0, renewal = true)
+        journal.failFloorRead = true
+        assertFailsWith<IllegalStateException> { pc.acceptGrant(Grant("fake-phone", "s1", 7, 200,
+            "fake-dataset-v1", request.requestNonce, request.minimumEpoch), request, 2) }
         assertFalse(pc.canEdit(2)); assertFalse(pc.hasSnapshot)
     }
 

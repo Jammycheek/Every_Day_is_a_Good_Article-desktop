@@ -6,8 +6,8 @@ class MockGrantFixture {
                        long localDeadline, String instance, long sentAt) {
         long duration = localDeadline - sentAt;
         PendingGrantRequest request = pc.beginGrantRequest(new DatasetIdentity(device, instance),
-            sentAt, duration, 0, false, false);
+            duration, 0, false, false);
         pc.acceptGrant(new Grant(device, session, revision, duration, instance,
-            request.getRequestNonce(), request.getMinimumEpoch()), request, sentAt);
+            request.getRequestNonce(), request.getMinimumEpoch()), request);
     }
 }

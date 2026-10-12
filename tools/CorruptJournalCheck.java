@@ -25,15 +25,15 @@ class CorruptJournalCheck {
                 link.observe(1, new WindowsTransportReader(helper).sample(), started, now());
                 if (link.getState() != TransportState.USB_MTP_READY) throw new IllegalStateException("Transport not ready");
                 MockGrantFixture.accept(pc, "fake-monitor-phone", "mock-corruption-session", 1, now() + 60000, "fake-dataset-v1", now());
-                pc.loadSyntheticSnapshot(new byte[]{1,2,3}, now());
-                if (!pc.canEdit(now()) || !pc.getHasSnapshot()) throw new IllegalStateException("Missing initial mock permission");
+                pc.loadSyntheticSnapshot(new byte[]{1,2,3});
+                if (!pc.canEdit() || !pc.getHasSnapshot()) throw new IllegalStateException("Missing initial mock permission");
                 Path damagedFile = disposable.resolve("pending.dpapi");
                 byte[] damaged = Files.readAllBytes(damagedFile);
                 damaged[damaged.length - 1] ^= (byte)0xff;
                 Files.write(damagedFile, damaged);
                 boolean rejected = false;
                 try { pc.getPending(); } catch (IllegalStateException expectedFailure) { rejected = true; }
-                if (!rejected || pc.canEdit(now()) || pc.getHasSnapshot()) throw new IllegalStateException("Corruption did not revoke session");
+                if (!rejected || pc.canEdit() || pc.getHasSnapshot()) throw new IllegalStateException("Corruption did not revoke session");
                 if (!Arrays.equals(damaged, Files.readAllBytes(damagedFile))) throw new IllegalStateException("Damaged journal altered");
                 if (!Arrays.equals(originalBytes, Files.readAllBytes(original))) throw new IllegalStateException("Source journal altered");
                 System.out.println("corrupt-read-rejected=true;mock-can-edit=false;snapshot=false");

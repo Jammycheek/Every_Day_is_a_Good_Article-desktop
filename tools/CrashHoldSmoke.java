@@ -14,9 +14,9 @@ class CrashHoldSmoke {
             link.observe(1, new WindowsTransportReader(helper).sample(), started, now());
             if (link.getState() != TransportState.USB_MTP_READY) throw new IllegalStateException("Transport not ready");
             MockGrantFixture.accept(pc, "fake-monitor-phone", "mock-crash-session", 1, now() + 180000, "fake-dataset-v1", now());
-            pc.loadSyntheticSnapshot(new byte[]{1,2,3}, now());
-            pc.stage("fake-monitor-op", "SYNTHETIC-MONITOR-DELTA", now());
-            if (!pc.canEdit(now()) || !pc.getHasSnapshot() || pc.getPending() == null)
+            pc.loadSyntheticSnapshot(new byte[]{1,2,3});
+            pc.stage("fake-monitor-op", "SYNTHETIC-MONITOR-DELTA");
+            if (!pc.canEdit() || !pc.getHasSnapshot() || pc.getPending() == null)
                 throw new IllegalStateException("Fixture not staged");
             System.out.println("crash-fixture-ready=1;mock-can-edit=true;snapshot=true;pending=true");
             System.out.flush();

@@ -72,8 +72,9 @@ class WindowsDeltaJournal(private val directory: Path, private val protector: Dp
     private var closed = false
     private val warningFile = directory.resolve("history-incomplete.warning")
     private var recoveryPreview: HistoryRecoveryPreview? = null
-    private var previewBytes: ByteArray? = null
-    private var previewAttributes: BasicFileAttributes? = null
+    private data class HistoryValue(val floor: Long?, val epoch: Long?)
+    private data class Source(val bytes: ByteArray?, val attributes: BasicFileAttributes)
+    private var previewSources: Map<Path, Source> = emptyMap()
     init {
         Files.createDirectories(directory)
         check(!Files.isSymbolicLink(directory))
@@ -145,72 +146,80 @@ class WindowsDeltaJournal(private val directory: Path, private val protector: Dp
         writeProtected(file, buffer.toByteArray())
     }
     @Synchronized override fun revisionFloor(identity: DatasetIdentity): Long? {
-        requireOwnership()
-        return readFloors()[identity]
-    }
-    @Synchronized override fun recordVerifiedRevision(identity: DatasetIdentity, revision: Long) {
-        requireOwnership()
-        require(revision >= 0)
-        val floors = readFloors().toMutableMap()
-        val previous = floors[identity]
-        if (previous != null && previous >= revision) return
-        floors[identity] = revision
-        writeFloors(floors)
+        requireOwnership(); return readHistory()[identity]?.floor
     }
     @Synchronized override fun verifiedEpoch(identity: DatasetIdentity): Long? {
-        requireOwnership(); return readRevisions(epochFile, 0x45414531)[identity]
+        requireOwnership(); return readHistory()[identity]?.epoch
+    }
+    @Synchronized override fun recordVerifiedRevision(identity: DatasetIdentity, revision: Long) {
+        requireOwnership(); require(revision >= 0)
+        updateHistory(identity, revision, null)
     }
     @Synchronized override fun recordVerifiedEpoch(identity: DatasetIdentity, epoch: Long) {
         requireOwnership(); require(epoch >= 0)
-        val epochs = readRevisions(epochFile, 0x45414531).toMutableMap()
-        if (epochs[identity]?.let { it >= epoch } == true) return
-        epochs[identity] = epoch
-        writeRevisions(epochFile, 0x45414531, epochs)
+        updateHistory(identity, null, epoch)
     }
-    private fun writeFloors(floors: Map<DatasetIdentity, Long>) = writeRevisions(floorFile, 0x45414631, floors)
-    private fun writeRevisions(target: Path, magic: Int, floors: Map<DatasetIdentity, Long>) {
-        require(floors.size <= 256) { "Revision floor capacity exceeded" }
+    @Synchronized override fun recordVerifiedGrant(identity: DatasetIdentity, revision: Long, epoch: Long) {
+        requireOwnership(); require(revision >= 0 && epoch >= 0)
+        updateHistory(identity, revision, epoch)
+    }
+    private fun updateHistory(identity: DatasetIdentity, revision: Long?, epoch: Long?) {
+        val history = readHistory().toMutableMap()
+        val previous = history[identity]
+        fun maximum(a: Long?, b: Long?): Long? = if (a == null) b else if (b == null) a else maxOf(a, b)
+        val next = HistoryValue(maximum(previous?.floor, revision), maximum(previous?.epoch, epoch))
+        if (next == previous) return
+        history[identity] = next
+        writeHistory(history)
+    }
+    private fun writeHistory(history: Map<DatasetIdentity, HistoryValue>) {
+        require(history.size <= 256) { "Verified history capacity exceeded; explicitly forget an identity" }
         val buffer = ByteArrayOutputStream()
         DataOutputStream(buffer).use { output ->
-            output.writeInt(magic); output.writeInt(floors.size)
-            floors.entries.sortedWith(compareBy({ it.key.device }, { it.key.incarnation })).forEach { (key, value) ->
+            output.writeInt(0x45414632); output.writeInt(history.size)
+            history.entries.sortedWith(compareBy({ it.key.device }, { it.key.incarnation })).forEach { (key, value) ->
                 require(listOf(key.device, key.incarnation).all { it.toByteArray(Charsets.UTF_8).size <= 4096 })
-                output.writeUTF(key.device); output.writeUTF(key.incarnation); output.writeLong(value)
+                output.writeUTF(key.device); output.writeUTF(key.incarnation)
+                output.writeLong(value.floor ?: -1); output.writeLong(value.epoch ?: -1)
             }
         }
-        writeProtected(target, buffer.toByteArray())
+        // This atomic replacement is authoritative. Legacy epoch bytes are retained, never re-imported.
+        writeProtected(floorFile, buffer.toByteArray())
     }
     private fun invalidateRecoveryPreview() {
         recoveryPreview = null
-        previewBytes?.fill(0); previewBytes = null
-        previewAttributes = null
+        previewSources.values.forEach { it.bytes?.fill(0) }; previewSources = emptyMap()
+    }
+    @Synchronized override fun verifiedHistoryEntries(): Map<DatasetIdentity, VerifiedHistoryEntry> {
+        requireOwnership(); return readHistory().mapValues { VerifiedHistoryEntry(it.value.floor, it.value.epoch) }
     }
     @Synchronized override fun revisionHistoryEntries(): Map<DatasetIdentity, Long> {
         requireOwnership(); return readFloors()
     }
+    private fun captureSources(): Map<Path, Source> = listOf(floorFile, epochFile).mapNotNull { path ->
+        val attributes = try { Files.readAttributes(path, BasicFileAttributes::class.java, LinkOption.NOFOLLOW_LINKS) }
+            catch (_: NoSuchFileException) { return@mapNotNull null }
+        check(attributes.isRegularFile) { "History must be a regular file" }
+        val bytes = try { readEncrypted(path) } catch (_: StorageFormatException) { null }
+        path to Source(bytes, attributes)
+    }.toMap()
     @Synchronized override fun prepareForgetHistory(identity: DatasetIdentity): HistoryRecoveryPreview? {
         requireOwnership(); invalidateRecoveryPreview()
-        val bytes = readEncrypted(floorFile) ?: return null
-        val floor = readFloors()[identity] ?: return null
-        previewBytes = bytes
-        return HistoryRecoveryPreview(HistoryRecoveryKind.FORGET_IDENTITY, identity, floor,
-            HistoryRecoveryConfirmation()).also { recoveryPreview = it }
+        val value = readHistory()[identity] ?: return null
+        previewSources = captureSources()
+        return HistoryRecoveryPreview(HistoryRecoveryKind.FORGET_IDENTITY, identity, value.floor,
+            HistoryRecoveryConfirmation(), value.epoch).also { recoveryPreview = it }
     }
     @Synchronized override fun prepareQuarantineHistory(): HistoryRecoveryPreview {
         requireOwnership(); invalidateRecoveryPreview()
-        val attributes = Files.readAttributes(floorFile, BasicFileAttributes::class.java, LinkOption.NOFOLLOW_LINKS)
-        check(attributes.isRegularFile) { "History must be a regular file" }
-        // Only data/key rejection or validated format failure can offer quarantine.
-        // Both reads must agree; an operational/IO failure propagates without a preview.
-        fun rejected(): Boolean = try { readFloors(); false }
+        fun rejected(): Boolean = try { readHistory(); false }
             catch (_: DecryptionRejectedException) { true }
             catch (_: StorageFormatException) { true }
         check(rejected()) { "Readable history requires identity-scoped forgetting" }
         Thread.sleep(100)
         check(rejected()) { "History is readable on retry; repair the helper or use scoped forgetting" }
-        val bytes = try { readEncrypted(floorFile) } catch (_: StorageFormatException) { null }
-        previewBytes = bytes
-        previewAttributes = attributes
+        previewSources = captureSources()
+        check(previewSources.isNotEmpty())
         return HistoryRecoveryPreview(HistoryRecoveryKind.QUARANTINE_ALL, null, null,
             HistoryRecoveryConfirmation()).also { recoveryPreview = it }
     }
@@ -222,40 +231,44 @@ class WindowsDeltaJournal(private val directory: Path, private val protector: Dp
         requireOwnership()
         val preview = recoveryPreview
         if (preview == null || preview.confirmation !== confirmation) return HistoryRecoveryResult.INVALID_CONFIRMATION
-        val expected = previewBytes
-        val attributes = previewAttributes
-        recoveryPreview = null; previewBytes = null; previewAttributes = null // one use, including failures
+        val sources = previewSources
+        recoveryPreview = null; previewSources = emptyMap() // one use, including failures
         try {
-            if (expected != null) {
-                val current = readEncrypted(floorFile)
-                if (current == null || !current.contentEquals(expected)) return HistoryRecoveryResult.CHANGED
-            } else {
-                check(preview.kind == HistoryRecoveryKind.QUARANTINE_ALL && attributes != null)
-                val current = try { Files.readAttributes(floorFile, BasicFileAttributes::class.java, LinkOption.NOFOLLOW_LINKS) }
-                    catch (_: NoSuchFileException) { return HistoryRecoveryResult.CHANGED }
-                if (!current.isRegularFile || current.fileKey() != attributes.fileKey() || current.size() != attributes.size() ||
-                    current.lastModifiedTime() != attributes.lastModifiedTime()) return HistoryRecoveryResult.CHANGED
-            }
-            // Durable generic marker precedes history changes. No identifiers/plaintext payload.
-            writeMarker(warningFile)
+            val currentPaths = captureSources()
+            try {
+                if (currentPaths.keys != sources.keys) return HistoryRecoveryResult.CHANGED
+                for ((path, expected) in sources) {
+                    val current = currentPaths.getValue(path)
+                    if (expected.bytes != null) {
+                        if (current.bytes == null || !current.bytes.contentEquals(expected.bytes)) return HistoryRecoveryResult.CHANGED
+                    } else {
+                        val a = current.attributes; val b = expected.attributes
+                        if (a.fileKey() != b.fileKey() || a.size() != b.size() || a.lastModifiedTime() != b.lastModifiedTime())
+                            return HistoryRecoveryResult.CHANGED
+                    }
+                }
+            } finally { currentPaths.values.forEach { it.bytes?.fill(0) } }
+            writeMarker(warningFile) // durable warning before losing either defence
             when (preview.kind) {
                 HistoryRecoveryKind.FORGET_IDENTITY -> {
-                    val floors = readFloors().toMutableMap()
-                    check(floors.remove(preview.identity!!) == preview.previousFloor)
-                    writeFloors(floors)
+                    val history = readHistory().toMutableMap()
+                    check(history.remove(preview.identity!!) == HistoryValue(preview.previousFloor, preview.previousEpoch))
+                    writeHistory(history) // both maxima removed in the same replacement, frees one shared slot
                 }
                 HistoryRecoveryKind.QUARANTINE_ALL -> {
-                    val quarantine = directory.resolve("revision-floors-quarantine-${UUID.randomUUID()}.dpapi")
-                    Files.move(floorFile, quarantine, StandardCopyOption.ATOMIC_MOVE)
-                    // Keep original encrypted bytes and ACL. No automatic restore, promotion or deletion.
+                    for (path in sources.keys) {
+                        val stem = if (path == floorFile) "revision-floors" else "grant-epochs"
+                        Files.move(path, directory.resolve("$stem-quarantine-${UUID.randomUUID()}.dpapi"), StandardCopyOption.ATOMIC_MOVE)
+                    }
+                    // Retain original ciphertext and ACL. Migration/quarantine of two legacy files is not a transaction.
                 }
             }
             return HistoryRecoveryResult.RECOVERED
-        } finally { expected?.fill(0) }
+        } finally { sources.values.forEach { it.bytes?.fill(0) } }
     }
     @Synchronized override fun historyRecoveryRequired(identity: DatasetIdentity): Boolean {
         requireOwnership()
-        return readMarker(warningFile) && readFloors()[identity] == null
+        return readMarker(warningFile) && readHistory()[identity]?.floor == null
     }
     @Synchronized override fun historyIsIncomplete(): Boolean { requireOwnership(); return readMarker(warningFile) }
     @Synchronized override fun finishHistoryRebaseline(identity: DatasetIdentity) {
@@ -279,23 +292,53 @@ class WindowsDeltaJournal(private val directory: Path, private val protector: Dp
             Files.move(temporary, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
         } finally { Files.deleteIfExists(temporary) }
     }
-    private fun readFloors(): Map<DatasetIdentity, Long> = readRevisions(floorFile, 0x45414631)
-    private fun readRevisions(path: Path, magic: Int): Map<DatasetIdentity, Long> {
-        val encrypted = readEncrypted(path) ?: return emptyMap()
+    private fun readFloors(): Map<DatasetIdentity, Long> = readHistory().mapNotNull { (key, value) ->
+        value.floor?.let { key to it }
+    }.toMap()
+    private fun readHistory(): Map<DatasetIdentity, HistoryValue> {
+        val encrypted = readEncrypted(floorFile)
+        var combined = false
+        val floors = if (encrypted == null) emptyMap() else {
+            val plain = protector.transform(encrypted, false)
+            try {
+                DataInputStream(ByteArrayInputStream(plain)).use { input ->
+                    val magic = input.readInt(); check(magic == 0x45414631 || magic == 0x45414632)
+                    combined = magic == 0x45414632
+                    val count = input.readInt(); check(count in 0..256)
+                    val values = mutableMapOf<DatasetIdentity, HistoryValue>()
+                    repeat(count) {
+                        val key = DatasetIdentity(input.readUTF(), input.readUTF())
+                        val floor = input.readLong(); val epoch = if (combined) input.readLong() else -1
+                        check(floor >= -1 && epoch >= -1 && (floor >= 0 || epoch >= 0))
+                        check(listOf(key.device, key.incarnation).all { it.toByteArray(Charsets.UTF_8).size <= 4096 })
+                        check(values.put(key, HistoryValue(floor.takeIf { it >= 0 }, epoch.takeIf { it >= 0 })) == null)
+                    }
+                    check(input.read() == -1); values
+                }
+            } catch (failure: Exception) { throw StorageFormatException(failure) }
+            finally { plain.fill(0) }
+        }
+        if (combined) return floors // no resurrection of forgotten epochs from retained legacy ciphertext
+        val epochs = readLegacyEpochs()
+        val keys = floors.keys + epochs.keys
+        if (keys.size > 256) throw StorageFormatException()
+        return keys.associateWith { HistoryValue(floors[it]?.floor, epochs[it]) }
+    }
+    private fun readLegacyEpochs(): Map<DatasetIdentity, Long> {
+        val encrypted = readEncrypted(epochFile) ?: return emptyMap()
         val plain = protector.transform(encrypted, false)
         try {
             DataInputStream(ByteArrayInputStream(plain)).use { input ->
-                check(input.readInt() == magic) { "Unsupported protected revision version" }
+                check(input.readInt() == 0x45414531)
                 val count = input.readInt(); check(count in 0..256)
-                val floors = mutableMapOf<DatasetIdentity, Long>()
+                val values = mutableMapOf<DatasetIdentity, Long>()
                 repeat(count) {
-                    val identity = DatasetIdentity(input.readUTF(), input.readUTF())
-                    val revision = input.readLong(); check(revision >= 0)
-                    check(listOf(identity.device, identity.incarnation).all { it.toByteArray(Charsets.UTF_8).size <= 4096 })
-                    check(floors.put(identity, revision) == null) { "Duplicate revision floor identity" }
+                    val key = DatasetIdentity(input.readUTF(), input.readUTF()); val epoch = input.readLong()
+                    check(epoch >= 0)
+                    check(listOf(key.device, key.incarnation).all { it.toByteArray(Charsets.UTF_8).size <= 4096 })
+                    check(values.put(key, epoch) == null)
                 }
-                check(input.read() == -1)
-                return floors
+                check(input.read() == -1); return values
             }
         } catch (failure: Exception) { throw StorageFormatException(failure) }
         finally { plain.fill(0) }
