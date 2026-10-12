@@ -32,6 +32,15 @@ internal fun requireWellFormedUtf16(value: String) {
 
 enum class ReconciliationResult { CLEARED, NO_PENDING, NOT_THIS_OPERATION, CONFLICT }
 
+/** Opaque, process-local, one-use capability. Not evidence of human confirmation by itself. */
+class PendingDiscardConfirmation internal constructor()
+data class PendingDiscardPreview(
+    val metadata: PendingEdit,
+    val contentDigest: String,
+    val confirmation: PendingDiscardConfirmation
+)
+enum class PendingDiscardResult { DISCARDED, NO_PENDING, INVALID_CONFIRMATION, CHANGED }
+
 /** Only pass a verified application applied receipt from a future authenticated channel.
  * Construction is NOT authentication. Device denotes the synthetic application/data identity.
  */
@@ -56,6 +65,7 @@ interface DeltaJournal {
 class RecoveryController(private val journal: DeltaJournal) {
     private val gate = SessionGate()
     private var snapshot: ByteArray? = null
+    private var discardPreview: PendingDiscardPreview? = null
     val hasSnapshot: Boolean get() = snapshot != null
     val pending: RecoveryEdit? get() = readJournal()
 
@@ -100,6 +110,7 @@ class RecoveryController(private val journal: DeltaJournal) {
         val grant = gate.grant!!
         val edit = RecoveryEdit(PendingEdit(grant.device, grant.baseRevision, operation, grant.datasetInstance), syntheticDelta)
         try {
+            discardPreview = null
             journal.save(edit) // persist BEFORE reporting the synthetic edit as staged
         } catch (failure: Exception) {
             suspendSession()
@@ -127,9 +138,40 @@ class RecoveryController(private val journal: DeltaJournal) {
             return ReconciliationResult.CONFLICT
         }
         suspendSession() // a matching applied result makes the current snapshot obsolete
+        discardPreview = null
         journal.recordAppliedRevision(DatasetIdentity(receipt.device, receipt.datasetInstance), receipt.resultingRevision)
         journal.clear() // only the exact persisted operation's trusted applied receipt permits clearing
         return ReconciliationResult.CLEARED
+    }
+
+    /** Readable pending edits only. Caller must show metadata/data-loss consequences before confirming.
+     * Preparing/cancelling a preview does not authorize deletion or suspend an active session.
+     */
+    fun preparePendingDiscard(): PendingDiscardPreview? {
+        discardPreview = null
+        val edit = readJournal() ?: return null
+        return PendingDiscardPreview(edit.metadata, edit.contentDigest, PendingDiscardConfirmation())
+            .also { discardPreview = it }
+    }
+
+    fun cancelPendingDiscard(confirmation: PendingDiscardConfirmation) {
+        if (discardPreview?.confirmation === confirmation) discardPreview = null
+    }
+
+    /** Call ONLY after explicit user confirmation of this preview. No transport/lease is required.
+     * Discard is local abandonment, never evidence of apply or cancellation on the phone.
+     */
+    fun discardPending(confirmation: PendingDiscardConfirmation): PendingDiscardResult {
+        val preview = discardPreview
+        if (preview == null || preview.confirmation !== confirmation)
+            return PendingDiscardResult.INVALID_CONFIRMATION
+        discardPreview = null // consume even on read/delete failure; retry requires a new preview
+        val edit = readJournal() ?: return PendingDiscardResult.NO_PENDING
+        if (preview.metadata != edit.metadata || preview.contentDigest != edit.contentDigest)
+            return PendingDiscardResult.CHANGED
+        suspendSession()
+        journal.clear() // revision-floor history is retained; failure propagates with editing stopped
+        return PendingDiscardResult.DISCARDED
     }
     fun suspendSession() {
         gate.suspendSession()

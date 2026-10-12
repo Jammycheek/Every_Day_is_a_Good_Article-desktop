@@ -274,6 +274,102 @@ class RecoveryControllerTest {
         assertTrue(journal.floors.isEmpty()); assertFalse(pc.canEdit(0))
     }
 
+    @Test fun confirmedDiscardResolvesChangedRevisionWithoutGrantingEditingOrRemovingFloor() {
+        val journal = Journal(); val pc = ready(journal); pc.stage("op1", "change", 1)
+        pc.observeTransport(false) // unknown/rejected outcome; phone has since advanced
+        pc.observeTransport(true)
+        assertFailsWith<IllegalStateException> { pc.acceptGrant(Grant("fake-phone", "s2", 8, 200, "fake-dataset-v1"), 2) }
+        val preview = pc.preparePendingDiscard()!!
+        assertEquals(pc.pending!!.metadata, preview.metadata)
+        assertEquals(pc.pending!!.contentDigest, preview.contentDigest)
+        assertNotNull(pc.pending); assertFalse(pc.canEdit(2))
+        pc.observeTransport(false) // confirmation does not require USB or an editing lease
+        assertEquals(PendingDiscardResult.DISCARDED, pc.discardPending(preview.confirmation))
+        assertNull(pc.pending); assertFalse(pc.canEdit(2)); assertFalse(pc.hasSnapshot)
+        assertEquals(7L, journal.floors[DatasetIdentity("fake-phone", "fake-dataset-v1")])
+        val restarted = RecoveryController(journal); restarted.observeTransport(true)
+        assertFailsWith<IllegalStateException> { restarted.acceptGrant(Grant("fake-phone", "stale", 6, 200, "fake-dataset-v1"), 3) }
+        restarted.acceptGrant(Grant("fake-phone", "fresh", 8, 200, "fake-dataset-v1"), 3)
+        assertTrue(restarted.canEdit(3)); assertFalse(restarted.hasSnapshot)
+        restarted.loadSyntheticSnapshot(byteArrayOf(9), 3); restarted.stage("op2", "new-change", 4)
+        assertEquals(PendingDiscardResult.INVALID_CONFIRMATION, pc.discardPending(preview.confirmation))
+        assertEquals("op2", restarted.pending!!.metadata.operation)
+    }
+
+    @Test fun preparingCancellingAndInvalidConfirmationsLeaveActiveSessionUntouched() {
+        val journal = Journal(); val pc = ready(journal); pc.stage("op1", "change", 1)
+        val saved = pc.pending!!; val first = pc.preparePendingDiscard()!!
+        assertTrue(pc.canEdit(2)); assertTrue(pc.hasSnapshot); assertEquals(saved, pc.pending)
+        val second = pc.preparePendingDiscard()!!
+        assertEquals(PendingDiscardResult.INVALID_CONFIRMATION, pc.discardPending(first.confirmation))
+        assertEquals(PendingDiscardResult.INVALID_CONFIRMATION, pc.discardPending(PendingDiscardConfirmation()))
+        val other = RecoveryController(journal)
+        assertEquals(PendingDiscardResult.INVALID_CONFIRMATION, other.discardPending(second.confirmation))
+        pc.cancelPendingDiscard(first.confirmation) // old cancellation cannot cancel the new preview
+        pc.cancelPendingDiscard(second.confirmation)
+        assertEquals(PendingDiscardResult.INVALID_CONFIRMATION, pc.discardPending(second.confirmation))
+        assertEquals(saved, pc.pending); assertTrue(pc.canEdit(2)); assertTrue(pc.hasSnapshot)
+    }
+
+    @Test fun changedMetadataOrPayloadRequiresNewConfirmationAndPreservesCurrentEdit() {
+        for (payloadChanged in listOf(false, true)) {
+            val journal = Journal(); val pc = ready(journal); pc.stage("op1", "change", 1)
+            val preview = pc.preparePendingDiscard()!!; val saved = pc.pending!!
+            journal.edit = if (payloadChanged) saved.copy(syntheticDelta = "replacement")
+                else saved.copy(metadata = saved.metadata.copy(operation = "op2"))
+            val replacement = journal.edit
+            assertEquals(PendingDiscardResult.CHANGED, pc.discardPending(preview.confirmation))
+            assertEquals(replacement, pc.pending); assertTrue(pc.canEdit(2)); assertTrue(pc.hasSnapshot)
+            assertEquals(PendingDiscardResult.INVALID_CONFIRMATION, pc.discardPending(preview.confirmation))
+        }
+    }
+
+    @Test fun missingPendingIsNoOpAndAppliedReconciliationInvalidatesDiscardConfirmation() {
+        val journal = Journal(); val pc = ready(journal)
+        assertNull(pc.preparePendingDiscard()); assertTrue(pc.canEdit(2)); assertTrue(pc.hasSnapshot)
+        pc.stage("op1", "change", 1); val preview = pc.preparePendingDiscard()!!
+        journal.edit = null // external disappearance does not authorize deletion of future records
+        assertEquals(PendingDiscardResult.NO_PENDING, pc.discardPending(preview.confirmation))
+        assertTrue(pc.canEdit(2)); assertTrue(pc.hasSnapshot)
+        pc.stage("op2", "new-change", 2); val next = pc.preparePendingDiscard()!!
+        assertEquals(ReconciliationResult.CLEARED, pc.reconcileApplied(receipt(pc.pending!!)))
+        assertEquals(PendingDiscardResult.INVALID_CONFIRMATION, pc.discardPending(next.confirmation))
+        assertEquals(8L, journal.floors[DatasetIdentity("fake-phone", "fake-dataset-v1")])
+    }
+
+    @Test fun readOrDeleteFailureStopsEditingRetainsPendingAndConsumesConfirmation() {
+        for (readFailure in listOf(false, true)) {
+            val journal = Journal(); val pc = ready(journal); pc.stage("op1", "change", 1)
+            val saved = pc.pending!!; val preview = pc.preparePendingDiscard()!!
+            journal.failRead = readFailure; journal.failClear = !readFailure
+            assertFailsWith<IllegalStateException> { pc.discardPending(preview.confirmation) }
+            assertFalse(pc.canEdit(2)); assertFalse(pc.hasSnapshot)
+            journal.failRead = false; journal.failClear = false
+            assertEquals(saved, pc.pending)
+            assertEquals(PendingDiscardResult.INVALID_CONFIRMATION, pc.discardPending(preview.confirmation))
+            assertEquals(PendingDiscardResult.DISCARDED, pc.discardPending(pc.preparePendingDiscard()!!.confirmation))
+        }
+    }
+
+    @Test fun unreadablePendingCannotBePreviewedOrDiscarded() {
+        val journal = Journal(); val pc = ready(journal); pc.stage("op1", "change", 1)
+        val preview = pc.preparePendingDiscard()!!; val saved = pc.pending!!; journal.failRead = true
+        assertFailsWith<IllegalStateException> { pc.preparePendingDiscard() }
+        assertFalse(pc.canEdit(2)); assertFalse(pc.hasSnapshot)
+        assertEquals(PendingDiscardResult.INVALID_CONFIRMATION, pc.discardPending(preview.confirmation))
+        journal.failRead = false; assertEquals(saved, pc.pending)
+    }
+
+    @Test fun legacyUnboundPendingCanBeExplicitlyDiscardedWithoutAssigningIdentity() {
+        val journal = Journal(); journal.edit = RecoveryEdit(PendingEdit("fake-phone", 7, "legacy-op"), "legacy")
+        val pc = RecoveryController(journal); val preview = pc.preparePendingDiscard()!!
+        assertNull(preview.metadata.datasetInstance)
+        assertEquals(PendingDiscardResult.DISCARDED, pc.discardPending(preview.confirmation))
+        assertTrue(journal.floors.isEmpty()); assertFalse(pc.canEdit(0))
+        pc.observeTransport(true); pc.acceptGrant(Grant("fake-phone", "fresh", 8, 100, "fake-dataset-v1"), 0)
+        assertTrue(pc.canEdit(0)); assertFalse(pc.hasSnapshot)
+    }
+
     @Test fun malformedStageNeverPersistsReplacementContent() {
         val journal = Journal(); val pc = ready(journal)
         assertFailsWith<IllegalArgumentException> { pc.stage("op1", "\uD800", 1) }
