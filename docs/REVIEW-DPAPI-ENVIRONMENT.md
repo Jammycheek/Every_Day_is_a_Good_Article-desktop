@@ -18,7 +18,7 @@ The check is synchronous in the existing serialized recovery operation, never th
 
 Five new tests cover real-DPAPI repeated canaries with no storage changes; helper rejection for normal history; canary startup/encrypt/decrypt/timeout/empty/oversize/mismatch failures; loss after preview with consumed confirmation and unchanged warning/history/pending; and invalid schema blocked by environment failure, then recoverable when repaired. Existing real corruption, schema, retry, timeout and archive-preservation tests remain in the full suite. Tests use synthetic disposable directories and test-only child processes.
 
-Local verification passed all 106 Kotlin tests (101 prior plus 5 environment tests), Java driver compilation with --release 17 and three separate-JVM recovery modes. Kotlin 2.1.20 ran with local JDK 25 and JVM target 17. Windows Gradle 8.12.1/JDK 17 CI remains pending after publication. Historical PR #2 CI does not validate this branch.
+Local verification passed all 106 Kotlin tests (101 prior plus 5 environment tests), Java driver compilation with --release 17 and three separate-JVM recovery modes. Kotlin 2.1.20 ran with local JDK 25 and JVM target 17. Windows Gradle 8.12.1/JDK 17 CI passed at implementation e8ef45cbac8d6499e5d38ad076aabf665addac61: [run 38264156901](https://github.com/Jammycheek/Every_Day_is_a_Good_Article-desktop/actions/runs/38264156901). Session/recovery tests, two native tests, three-JVM recovery, Java driver compilation, native self-test and CLI packaging all succeeded. A subsequent documentation-only commit records this evidence.
 
 ## Remaining
 
