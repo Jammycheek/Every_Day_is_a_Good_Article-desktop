@@ -67,7 +67,7 @@ bool usbAncestor(const std::wstring& id) {
             &type, reinterpret_cast<PBYTE>(instance), &size, 0);
         if (result != CR_SUCCESS || type != DEVPROP_TYPE_STRING || size < sizeof(WCHAR)
             || size > sizeof(instance) || size % sizeof(WCHAR) != 0
-            || instance[size / sizeof(WCHAR) - 1] != L'\\0' || instance[0] == L'\\0') return false;
+            || instance[size / sizeof(WCHAR) - 1] != L'\0' || instance[0] == L'\0') return false;
         if (CM_Locate_DevNodeW(&node, instance, CM_LOCATE_DEVNODE_NORMAL) != CR_SUCCESS) return false;
     }
     for (int depth = 0; depth < 16; ++depth) {
