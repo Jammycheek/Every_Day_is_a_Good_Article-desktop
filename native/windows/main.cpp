@@ -160,14 +160,19 @@ std::vector<unsigned char> readBounded(IStream* stream) {
         if (read == 0) return bytes;
     }
 }
-void writeAll(IStream* stream, const std::vector<unsigned char>& bytes) {
+void writeAll(IStream* stream, const std::vector<unsigned char>& bytes, bool slow = false) {
     if (bytes.size() > MAX_BYTES) throw std::runtime_error("Write exceeds limit");
     size_t offset = 0;
     while (offset < bytes.size()) {
         ULONG written = 0;
-        checked(stream->Write(bytes.data() + offset, static_cast<ULONG>(bytes.size() - offset), &written));
-        if (!written || written > bytes.size() - offset) throw std::runtime_error("Incomplete write");
+        ULONG requested = static_cast<ULONG>(slow ? (std::min)(size_t(1024), bytes.size() - offset) : bytes.size() - offset);
+        checked(stream->Write(bytes.data() + offset, requested, &written));
+        if (!written || written > requested) throw std::runtime_error("Incomplete write");
         offset += written;
+        if (slow) {
+            LocalOutput() << L"transfer-written=" << offset << L"\\n";
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+        }
     }
 }
 void verify(const std::vector<unsigned char>& expected, const std::vector<unsigned char>& actual) {
@@ -183,7 +188,7 @@ std::wstring sha256(const std::vector<unsigned char>& bytes) {
     for (auto b : hash) { result += digits[b >> 4]; result += digits[b & 15]; }
     return result;
 }
-void roundtrip(PCWSTR id, PCWSTR parent, bool empty) {
+void roundtrip(PCWSTR id, PCWSTR parent, bool empty, bool slow = false) {
     Device d(id, true);
     if (!declaredUsb(d.content.Get()) || !usbAncestor(id)) throw std::runtime_error("USB evidence is incomplete");
     auto folder = properties(d.content.Get(), parent);
@@ -210,7 +215,7 @@ void roundtrip(PCWSTR id, PCWSTR parent, bool empty) {
     DWORD optimal = 0;
     checked(d.content->CreateObjectWithPropertiesAndData(props.Get(), &output, &optimal, nullptr));
     try {
-        writeAll(output.Get(), bytes);
+        writeAll(output.Get(), bytes, slow);
         checked(output->Commit(STGC_DEFAULT));
     } catch (...) {
         output->Revert(); // best effort only; a timeout can leave a partial synthetic file
@@ -263,8 +268,9 @@ void selfTest() {
 int wmain(int argc, wchar_t** argv) {
     if (argc < 2) return 2;
     // Hard process deadline also covers a blocked COM call. It cannot roll back remote writes.
-    std::thread([] {
-        std::this_thread::sleep_for(std::chrono::seconds(30));
+    const bool slowMode = std::wstring(argv[1]) == L"roundtrip-slow";
+    std::thread([slowMode] {
+        std::this_thread::sleep_for(std::chrono::seconds(slowMode ? 90 : 30));
         TerminateProcess(GetCurrentProcess(), 124);
     }).detach();
     HRESULT init = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
@@ -276,9 +282,10 @@ int wmain(int argc, wchar_t** argv) {
         else if (command == L"devices" && argc == 2) devices();
         else if (command == L"children" && argc == 4) {
             Device d(argv[2], false); children(d.content.Get(), argv[3]);
-        } else if (command == L"roundtrip" && argc == 6 && std::wstring(argv[4]) == L"--synthetic-write"
+        } else if ((command == L"roundtrip" || command == L"roundtrip-slow") && argc == 6 && std::wstring(argv[4]) == L"--synthetic-write"
                    && (std::wstring(argv[5]) == L"empty" || std::wstring(argv[5]) == L"64k")) {
-            roundtrip(argv[2], argv[3], std::wstring(argv[5]) == L"empty");
+            if (slowMode && std::wstring(argv[5]) != L"64k") throw std::runtime_error("Slow mode requires 64k");
+            roundtrip(argv[2], argv[3], std::wstring(argv[5]) == L"empty", slowMode);
         } else { std::wcerr << L"Invalid command. See docs/WINDOWS-PROBE.md\n"; result = 2; }
     } catch (HRESULT hr) {
         std::wcerr << L"error-hresult=" << std::hex << static_cast<unsigned long>(hr) << L"\n"; result = 1;
