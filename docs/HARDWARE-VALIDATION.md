@@ -49,3 +49,13 @@ The user locked the phone while leaving USB connected and file-transfer mode ena
 - Direct DEVICE child enumeration succeeded (exit 0) and returned one storage/root object.
 
 No file contents were read or written in this test. This demonstrates continued device/metadata access only, not full file access while locked. Initial connection while already locked, reboot-before-first-unlock and other phones/policies remain untested. Screen lock must not be interpreted as an application editing-session revocation or an MTP disconnection based on these results.
+
+## Unplug during throttled synthetic write
+Built code 822ef22d2b1cdd49cf64df30566da832ba90ae73 locally; both native CTest cases passed (including the slow-write path).
+Started a new random-named 64 KiB synthetic file in the dedicated folder, writing at most 1 KiB per iteration with a one-second pause. After progress began, the user unplugged USB.
+- Last successful IStream write progress: 17408 bytes. This is host/driver write evidence, not guaranteed durable phone bytes.
+- The helper reported HRESULT 0x802A0002 and exit code 1.
+- No roundtrip-verified success marker was emitted; the incomplete transfer was not reported as verified.
+- Revert was attempted best-effort; remote rollback or absence of a partial object is not established.
+
+Reconnection and dedicated-folder inspection are pending. This validates the helper's synthetic transport failure path only, not Android editing locks, persistent unacknowledged application deltas or real-data recovery.
