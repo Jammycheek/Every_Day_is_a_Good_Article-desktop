@@ -17,14 +17,14 @@ object JournalLockSmoke {
             val identity = DatasetIdentity("fake-lock-phone", "fake-dataset-v1")
             when (args[2]) {
                 "hold" -> {
-                    it.recordAppliedRevision(identity, 7)
+                    it.recordVerifiedRevision(identity, 7)
                     it.save(RecoveryEdit(PendingEdit("fake-lock-phone", 7, "op-owner", "fake-dataset-v1"), "SYNTHETIC-OWNER"))
                     println("HELD"); System.out.flush()
                     check(readlnOrNull() == "release")
                 }
                 "verify" -> {
                     check(it.revisionFloor(identity) == 7L)
-                    it.recordAppliedRevision(identity, 6) // delayed older proposal must not lower the floor
+                    it.recordVerifiedRevision(identity, 6) // delayed older proposal must not lower the floor
                     check(it.revisionFloor(identity) == 7L)
                     check(it.load()?.syntheticDelta == "SYNTHETIC-OWNER")
                     println("VERIFIED")

@@ -14,7 +14,7 @@ class RecoveryControllerTest {
         override fun save(edit: RecoveryEdit) { check(!failSave); this.edit = edit }
         override fun clear() { check(!failClear); edit = null }
         override fun revisionFloor(identity: DatasetIdentity): Long? { check(!failFloorRead); return floors[identity] }
-        override fun recordAppliedRevision(identity: DatasetIdentity, revision: Long) {
+        override fun recordVerifiedRevision(identity: DatasetIdentity, revision: Long) {
             check(!failFloorSave); floors[identity] = maxOf(floors[identity] ?: 0, revision)
         }
     }

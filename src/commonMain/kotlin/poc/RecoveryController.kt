@@ -1,5 +1,9 @@
 package poc
 
+/** Null incarnation means a preserved legacy record, never an inferred dataset identity. */
+data class PendingEdit(val device: String, val baseRevision: Long, val operation: String,
+    val datasetInstance: String? = null)
+
 data class RecoveryEdit(val metadata: PendingEdit, val syntheticDelta: String) {
     init {
         requireWellFormedUtf16(metadata.device)
@@ -57,8 +61,10 @@ interface DeltaJournal {
     fun save(edit: RecoveryEdit)
     fun clear()
     fun revisionFloor(identity: DatasetIdentity): Long?
-    /** Persist max(existing, revision) before pending deletion; fail rather than forget history. */
-    fun recordAppliedRevision(identity: DatasetIdentity, revision: Long)
+    /** Persist max(existing, verified revision) for a trusted grant or applied receipt.
+     * Complete before reporting grant acceptance or deleting pending recovery.
+     */
+    fun recordVerifiedRevision(identity: DatasetIdentity, revision: Long)
 }
 
 /** Serialized calls only. Grants/receipts must already be authenticated by a future private channel. */
@@ -99,7 +105,7 @@ class RecoveryController(private val journal: DeltaJournal) {
         gate.acceptGrant(grant, now)
         try {
             // Serialized calls: do not report the grant accepted until its verified revision is retained.
-            journal.recordAppliedRevision(identity, grant.baseRevision)
+            journal.recordVerifiedRevision(identity, grant.baseRevision)
             if (rebaseline) recovery!!.finishHistoryRebaseline(identity)
         } catch (failure: Exception) {
             suspendSession(); throw failure
@@ -172,7 +178,7 @@ class RecoveryController(private val journal: DeltaJournal) {
         }
         suspendSession() // a matching applied result makes the current snapshot obsolete
         discardPreview = null
-        journal.recordAppliedRevision(DatasetIdentity(receipt.device, receipt.datasetInstance), receipt.resultingRevision)
+        journal.recordVerifiedRevision(DatasetIdentity(receipt.device, receipt.datasetInstance), receipt.resultingRevision)
         journal.clear() // applied-path clearing requires this exact trusted receipt; discard is a separate decision
         return ReconciliationResult.CLEARED
     }

@@ -23,7 +23,7 @@ class RevisionHistoryRecoveryTest {
         WindowsDeltaJournal(dir, protector).use { journal ->
             val pc = RecoveryController(journal); pc.observeTransport(true)
             pc.acceptGrant(grant(10), 0); pc.loadSyntheticSnapshot(byteArrayOf(1), 0)
-            journal.recordAppliedRevision(other, 20)
+            journal.recordVerifiedRevision(other, 20)
             val preview = pc.prepareForgetRevisionHistory(identity)!!
             assertEquals(10L, preview.previousFloor); assertEquals(identity, preview.identity)
             assertTrue(pc.canEdit(0)); assertTrue(pc.hasSnapshot)
@@ -58,7 +58,7 @@ class RevisionHistoryRecoveryTest {
         val damaged = byteArrayOf(1, 2, 3, 4)
         val edit = RecoveryEdit(PendingEdit(identity.device, 7, "op-pending", identity.incarnation), "SYNTHETIC-PENDING")
         WindowsDeltaJournal(dir, protector).use { journal ->
-            journal.save(edit); journal.recordAppliedRevision(identity, 7)
+            journal.save(edit); journal.recordVerifiedRevision(identity, 7)
             val pendingBytes = Files.readAllBytes(dir.resolve("pending.dpapi"))
             val floorFile = dir.resolve("revision-floors.dpapi")
             val acl = Files.getFileAttributeView(floorFile, java.nio.file.attribute.AclFileAttributeView::class.java).acl
@@ -91,13 +91,13 @@ class RevisionHistoryRecoveryTest {
 
     @Test fun cancelledForeignReusedAndChangedPreviewsNeverForgetHistory() = trial { dir, protector ->
         WindowsDeltaJournal(dir, protector).use { journal ->
-            journal.recordAppliedRevision(identity, 10)
+            journal.recordVerifiedRevision(identity, 10)
             val pc = RecoveryController(journal)
             val first = pc.prepareForgetRevisionHistory(identity)!!
             val second = pc.prepareForgetRevisionHistory(identity)!!
             trial { foreignDir, foreignProtector ->
                 WindowsDeltaJournal(foreignDir, foreignProtector).use { foreign ->
-                    foreign.recordAppliedRevision(identity, 99)
+                    foreign.recordVerifiedRevision(identity, 99)
                     foreign.prepareForgetHistory(identity)
                     assertEquals(HistoryRecoveryResult.INVALID_CONFIRMATION, foreign.recoverHistory(second.confirmation))
                     assertEquals(99L, foreign.revisionFloor(identity))
@@ -108,7 +108,7 @@ class RevisionHistoryRecoveryTest {
             pc.cancelRevisionHistoryRecovery(second.confirmation)
             assertEquals(HistoryRecoveryResult.INVALID_CONFIRMATION, pc.recoverRevisionHistory(second.confirmation))
             val changed = pc.prepareForgetRevisionHistory(identity)!!
-            journal.recordAppliedRevision(identity, 11)
+            journal.recordVerifiedRevision(identity, 11)
             assertEquals(HistoryRecoveryResult.CHANGED, pc.recoverRevisionHistory(changed.confirmation))
             assertEquals(HistoryRecoveryResult.INVALID_CONFIRMATION, pc.recoverRevisionHistory(changed.confirmation))
             assertEquals(11L, journal.revisionFloor(identity)); assertFalse(journal.historyIsIncomplete())
@@ -143,9 +143,9 @@ class RevisionHistoryRecoveryTest {
 
     @Test fun baselineSaveFailureNeverEnablesEditingOrLosesRecoveryRequirement() = trial { dir, protector ->
         WindowsDeltaJournal(dir, protector).use { journal ->
-            journal.recordAppliedRevision(identity, 10)
+            journal.recordVerifiedRevision(identity, 10)
             val failing = object : RevisionHistoryRecoveryJournal by journal {
-                override fun recordAppliedRevision(identity: DatasetIdentity, revision: Long) { error("Injected save failure") }
+                override fun recordVerifiedRevision(identity: DatasetIdentity, revision: Long) { error("Injected save failure") }
             }
             val pc = RecoveryController(failing); pc.observeTransport(true)
             assertEquals(HistoryRecoveryResult.RECOVERED,

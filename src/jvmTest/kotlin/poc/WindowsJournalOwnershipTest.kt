@@ -39,7 +39,7 @@ class WindowsJournalOwnershipTest {
         val owner = WindowsDeltaJournal(directory, protector)
         try {
             val identity = DatasetIdentity("fake-lock-phone", "fake-dataset-v1")
-            owner.recordAppliedRevision(identity, 7)
+            owner.recordVerifiedRevision(identity, 7)
             owner.save(RecoveryEdit(PendingEdit("fake-lock-phone", 7, "op-owner", "fake-dataset-v1"), "SYNTHETIC-OWNER"))
             val pending = Files.readAllBytes(directory.resolve("pending.dpapi"))
             val floors = Files.readAllBytes(directory.resolve("revision-floors.dpapi"))
@@ -54,7 +54,7 @@ class WindowsJournalOwnershipTest {
             assertFailsWith<IllegalStateException> { owner.load() }
             assertFailsWith<IllegalStateException> { owner.clear() }
             assertFailsWith<IllegalStateException> { owner.revisionFloor(identity) }
-            assertFailsWith<IllegalStateException> { owner.recordAppliedRevision(identity, 8) }
+            assertFailsWith<IllegalStateException> { owner.recordVerifiedRevision(identity, 8) }
             assertFailsWith<IllegalStateException> { owner.save(RecoveryEdit(PendingEdit("fake-lock-phone", 7, "op2", "fake-dataset-v1"), "NEW")) }
             WindowsDeltaJournal(directory, protector).use {
                 assertEquals(7L, it.revisionFloor(identity)); assertEquals("SYNTHETIC-OWNER", it.load()!!.syntheticDelta)

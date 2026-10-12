@@ -9,7 +9,7 @@ class TransportCoordinatorTest {
         override fun save(edit: RecoveryEdit) { this.edit = edit }
         override fun clear() { edit = null }
         override fun revisionFloor(identity: DatasetIdentity) = floors[identity]
-        override fun recordAppliedRevision(identity: DatasetIdentity, revision: Long) {
+        override fun recordVerifiedRevision(identity: DatasetIdentity, revision: Long) {
             floors[identity] = maxOf(floors[identity] ?: 0, revision)
         }
     }

@@ -130,7 +130,7 @@ class WindowsDeltaJournal(private val directory: Path, private val protector: Dp
         requireOwnership()
         return readFloors()[identity]
     }
-    @Synchronized override fun recordAppliedRevision(identity: DatasetIdentity, revision: Long) {
+    @Synchronized override fun recordVerifiedRevision(identity: DatasetIdentity, revision: Long) {
         requireOwnership()
         require(revision >= 0)
         val floors = readFloors().toMutableMap()
@@ -268,7 +268,12 @@ class WindowsDeltaJournal(private val directory: Path, private val protector: Dp
     }
     private fun writeProtected(target: Path, plain: ByteArray) {
         val encrypted = try { protector.transform(plain, true) } finally { plain.fill(0) }
-        val temporary = Files.createTempFile(directory, "pending-", ".tmp")
+        val prefix = when (target) {
+            file -> "pending-"
+            floorFile -> "floor-"
+            else -> error("Unknown protected storage target")
+        }
+        val temporary = Files.createTempFile(directory, prefix, ".tmp")
         try {
             restrict(temporary)
             FileChannel.open(temporary, StandardOpenOption.WRITE).use { channel ->
