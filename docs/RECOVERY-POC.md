@@ -8,11 +8,12 @@ RecoveryController receives explicit transport observations and mock grants/appl
 - Reconnection alone cannot grant editing rights.
 - Restart reads only the encrypted delta, never a full snapshot or editing grant.
 - Recovery candidate must match application identity and base revision; no automatic retransmission.
-- reconcileApplied clears the journal only for a pre-authenticated applied receipt matching the persisted identity, base revision, operation and content digest, with an advanced resulting revision. It requires neither transport nor an editing lease and never enables editing. Errors retain recovery and stop editing.
+- reconcileApplied returns CLEARED / NO_PENDING / NOT_THIS_OPERATION / CONFLICT. It clears only for a pre-authenticated receipt matching persisted identity, base revision, operation and digest, with an advanced result revision. No pending edit or unrelated identity/operation leaves the active session unchanged. A same-operation conflict, read failure or matching clear attempt suspends editing. It requires neither transport nor an editing lease and never enables editing.
 - Corrupted/unreadable journals raise errors and remain on disk.
 
 WindowsDeltaJournal uses the helper's binary protect/unprotect pipe with user-scope DPAPI (no machine scope), an owner-only ACL and a forced encrypted temporary file followed by atomic move. No plaintext file, console payload or command argument is used.
 Calls are serialized and there is one writer. Each string is bounded to 4096 UTF-8 bytes; this is a one-operation synthetic record, not a journal of application documents.
+Unpaired UTF-16 surrogates are rejected before persistence or digest encoding, including on legacy journal load. The modified-UTF-8 journal format is unchanged for valid strings; production digest canonicalization must be specified over bytes rather than copied from this string fixture.
 The same Windows user typically restores data; Windows account/profile loss is outside this PoC. Admin/same-user malware is not addressed by these measures.
 
 ## Verification

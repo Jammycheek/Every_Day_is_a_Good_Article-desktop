@@ -57,6 +57,7 @@ Late applied outcomes remain useful even after editing permission expires. Readi
 
 ## Current PoC gaps
 Grant and PendingEdit currently contain synthetic string identity and numeric revision only. RecoveryEdit derives a versioned SHA-256 content digest from the persisted synthetic fields, and AppliedReceipt binds that digest and resulting revision; this is not a production canonical schema or signature. There is no authenticated carrier, negotiated version, epoch, authoritative snapshot acquisition, renew protocol, operation-status query or phone apply transaction. Dataset incarnation, generated unique operation IDs and submitted-state persistence remain missing. The one-operation journal is not a production document schema. Manual fixture grants/receipts are test inputs, not authentication.
+The PoC rejects unpaired surrogates so distinct malformed strings cannot collapse to the same replacement bytes during hashing. Production canonicalization must still be defined over bytes. Reconciliation distinguishes no pending/unrelated receipts (leave editing unchanged) from same-operation conflict (suspend and retain) and a matching applied receipt (suspend and clear).
 The polling bridge can miss rapid unplug/replug; private session validation and authoritative revision checks must still protect apply. Persistence interrupted during save, multi-process exclusion, retention and power-loss durability need separate work before real data.
 
 ## Private integration acceptance tests
