@@ -13,7 +13,7 @@ Three independent boundaries:
 3. SessionChannel: authenticated request/grant/renew/release and applied acknowledgement from the private app. MTP presence cannot grant editing rights.
 
 Windows WPD device enumeration is an implementation candidate, not proof of USB: WPD also supports other transports. Verify the device transport property and corroborate PnP attachment; unsupported/unknown stays unknown. A filename, friendly name, or connection event is not application identity.
-A separate Windows C++ WPD helper implements device/child enumeration and a bounded synthetic round trip. Kotlin launches it as a process; hardware confirmation remains pending. Do not treat MTP as a mounted filesystem or assume atomic rename / instant visibility.
+A separate Windows C++ WPD helper implements device/child enumeration and a bounded synthetic round trip. Kotlin launches it as a process; hardware confirmation on one phone is recorded in HARDWARE-VALIDATION.md. Do not treat MTP as a mounted filesystem or assume atomic rename / instant visibility.
 
 ## Safety and protocol proposal (requires private Android review)
 Phone remains authoritative. Phone serializes editing and grants a bounded lease only after it commits its own lock.
@@ -24,7 +24,7 @@ On reconnect: reacquire lease and compare phone identity/base revision; conflict
 A transfer success is not commit success. Clear a delta only after validated app-level applied acknowledgement. Lost acknowledgements require querying operation status before resubmission.
 Phone lease expiry/crash recovery must unlock safely. Never depend on receiving a desktop release message. MTP mailbox timing, background execution and renewal channel are unconfirmed; no final wire protocol is selected.
 A lease expiry can race an in-flight transfer. Phone MUST validate session/revision when applying and reject stale requests. The synthetic gate does not implement those private-side rules.
-Snapshot release in the model is a flag only; no secure memory erasure or physical data deletion is claimed.
+The original gate models snapshot presence as a flag; RecoveryController also zeroes/releases its owned byte array. Secure erasure of all JVM/native copies or physical data deletion is not claimed.
 
 ## Validation stages and acceptance
 A. Automatic synthetic tests: connection alone; disconnect; lease expiry; wrong phone/revision; stale/wrong ack; grant replacement. Single-threaded model only, no concurrent callbacks.
@@ -40,7 +40,7 @@ Go/no-go: B+C demonstrate actual transport; E demonstrates lock safety. A alone 
 ## Current limitations
 Default sandbox launcher fails on encrypted virtual E:, but a C: execution path and VS2019 native build/tests now work. E: is not used. See HARDWARE-VALIDATION.md and RECOVERY-POC.md for verified scope.
 The native helper and Kotlin process runner are implemented. User-scope DPAPI protection for one synthetic delta and a PC recovery controller are implemented. Real-phone synthetic transfer and failure/recovery evidence are in HARDWARE-VALIDATION.md. Authentication, real phone lock and Compose UI are not implemented. See WINDOWS-PROBE.md. This is not production synchronization.
-Build with Gradle 8.12.1 and JDK 17: gradle jvmTest. No Gradle wrapper generated because local execution is unavailable.
+Build with Gradle 8.12.1 and JDK 17: gradle jvmTest. No Gradle wrapper is included; CI provisions Gradle explicitly. Local native builds and CI-packaged Java drivers were executed successfully. See POC-RESULTS.md for the stage outcome and remaining work.
 
 ## References
 - https://learn.microsoft.com/en-us/windows/win32/wpd_sdk/enumerating-devices

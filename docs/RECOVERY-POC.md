@@ -1,6 +1,6 @@
 # PC recovery PoC
 Synthetic data only; no private Android protocol or real application schema.
-RecoveryController receives explicit transport observations and pre-authenticated mock grants/acks. It is not automatically connected to WPD enumeration or a UI event loop.
+RecoveryController receives explicit transport observations and mock grants/acks representing a future authenticated channel. The TransportCoordinator/WindowsTransportReader polling bridge connects WPD observations to a serialized event loop; no Compose UI or private Android channel is implemented. See TRANSPORT-SESSION-BRIDGE.md and POC-RESULTS.md.
 
 ## Behavior
 - Save one synthetic delta before reporting it staged.
@@ -21,7 +21,7 @@ Windows JVM integration test uses the actual native DPAPI helper, writes a synth
 Build the native helper, set POC_HELPER to its absolute path, then run gradle jvmTest. CI does this in Windows. All test data is synthetic.
 
 ## Limits
-No actual process-crash/power-loss test, directory fsync guarantee, multi-process locking, retention policy, secure erasure of JVM strings, Android identity authentication or idempotent apply-status query.
+Normal process restart and forced termination after completed save were locally verified with synthetic data. Interruption during save, Windows reboot and power loss remain untested. No directory fsync guarantee, multi-process locking, retention policy, secure erasure of JVM strings, Android identity authentication or idempotent apply-status query is implemented.
 Zeroing only affects the controller-owned byte array; JVM/native copies may remain.
 Crash after phone application but before journal deletion can leave an already-applied pending operation; private Android integration MUST query operation status before replay.
 A crash can leave an encrypted temporary file. It is not silently promoted or deleted at startup.

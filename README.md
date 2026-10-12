@@ -3,6 +3,7 @@ Windows-first desktop companion PoC. Kotlin Multiplatform core, Kotlin/JVM proce
 Windows WPD/DPAPI helper and planned Compose Multiplatform UI. The phone remains authoritative.
 
 - [Transport validation plan](docs/POC-PLAN.md)
+- [PoC results and remaining work](docs/POC-RESULTS.md)
 - [Windows probe guide](docs/WINDOWS-PROBE.md)
 - [Real-phone hardware evidence](docs/HARDWARE-VALIDATION.md)
 - [PC synthetic recovery](docs/RECOVERY-POC.md)
