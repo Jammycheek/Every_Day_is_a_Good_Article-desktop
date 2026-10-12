@@ -11,6 +11,7 @@ Windows WPD/DPAPI helper and planned Compose Multiplatform UI. The phone remains
 - [Review follow-up: exclusive recovery-directory ownership](docs/REVIEW-DIRECTORY-OWNERSHIP.md)
 - [Review follow-up: confirmed history recovery](docs/REVIEW-HISTORY-RECOVERY.md)
 - [Review follow-up: storage names and recovery-model cleanup](docs/REVIEW-STORAGE-CLEANUP.md)
+- [Fourth review: failure classification and final PR scope](docs/REVIEW-FAILURE-CLASSIFICATION.md)
 - [Windows probe guide](docs/WINDOWS-PROBE.md)
 - [Real-phone hardware evidence](docs/HARDWARE-VALIDATION.md)
 - [PC synthetic recovery](docs/RECOVERY-POC.md)

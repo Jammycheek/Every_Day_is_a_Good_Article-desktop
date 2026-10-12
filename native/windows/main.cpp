@@ -267,6 +267,7 @@ void selfTest() {
     LocalOutput() << L"self-test=passed\n";
 }
 // Binary pipe only: recovery payloads never appear in console arguments or diagnostic logs.
+struct DecryptionRejected {};
 void protectPipe(bool encrypt) {
     std::vector<BYTE> input;
     BYTE chunk[4096];
@@ -288,7 +289,13 @@ void protectPipe(bool encrypt) {
         : CryptUnprotectData(&source, nullptr, nullptr, nullptr, nullptr, CRYPTPROTECT_UI_FORBIDDEN, &output);
     DWORD error = GetLastError();
     SecureZeroMemory(input.data(), input.size());
-    if (!success) checked(HRESULT_FROM_WIN32(error));
+    if (!success) {
+        // Dedicated status only for known data/key rejection, never helper/pipe/resource failure.
+        if (!encrypt && (error == ERROR_INVALID_DATA || error == ERROR_INVALID_PARAMETER ||
+            error == NTE_BAD_DATA || error == NTE_BAD_KEY_STATE || error == NTE_BAD_KEYSET))
+            throw DecryptionRejected{};
+        checked(HRESULT_FROM_WIN32(error));
+    }
     struct ProtectedBuffer {
         DATA_BLOB& blob;
         ~ProtectedBuffer() { SecureZeroMemory(blob.pbData, blob.cbData); LocalFree(blob.pbData); }
@@ -326,6 +333,8 @@ int wmain(int argc, wchar_t** argv) {
             if (slowMode && std::wstring(argv[5]) != L"64k") throw std::runtime_error("Slow mode requires 64k");
             roundtrip(argv[2], argv[3], std::wstring(argv[5]) == L"empty", slowMode);
         } else { std::wcerr << L"Invalid command. See docs/WINDOWS-PROBE.md\n"; result = 2; }
+    } catch (const DecryptionRejected&) {
+        result = 3; // Binary unprotect protocol: completed input, rejected ciphertext/key, no output.
     } catch (HRESULT hr) {
         std::wcerr << L"error-hresult=" << std::hex << static_cast<unsigned long>(hr) << L"\n"; result = 1;
     } catch (const std::exception& e) {

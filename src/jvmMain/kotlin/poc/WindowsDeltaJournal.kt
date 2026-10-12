@@ -10,12 +10,18 @@ import java.nio.file.attribute.*
 import java.util.concurrent.*
 import java.util.UUID
 
-class DpapiProtector(private val helper: Path) {
+class ProtectionUnavailableException(cause: Throwable? = null) : IllegalStateException("Recovery protection temporarily unavailable", cause)
+class DecryptionRejectedException : IllegalStateException("Recovery ciphertext or key rejected")
+class StorageFormatException(cause: Throwable? = null) : IllegalStateException("Invalid recovery storage format", cause)
+
+class DpapiProtector internal constructor(private val command: (Boolean) -> List<String>, private val timeoutMillis: Long) {
+    constructor(helper: Path) : this({ encrypt -> listOf(helper.toAbsolutePath().toString(),
+        if (encrypt) "protect" else "unprotect") }, 15000)
     fun transform(bytes: ByteArray, encrypt: Boolean): ByteArray {
         require(bytes.isNotEmpty() && bytes.size <= 131072)
         check(System.getProperty("os.name").startsWith("Windows"))
-        val process = ProcessBuilder(helper.toAbsolutePath().toString(), if (encrypt) "protect" else "unprotect")
-            .redirectError(ProcessBuilder.Redirect.DISCARD).start()
+        val process = try { ProcessBuilder(command(encrypt)).redirectError(ProcessBuilder.Redirect.DISCARD).start() }
+            catch (failure: Exception) { throw ProtectionUnavailableException(failure) }
         val workers = Executors.newFixedThreadPool(2)
         try {
             val output = workers.submit<ByteArray> {
@@ -32,13 +38,23 @@ class DpapiProtector(private val helper: Path) {
                 }
             }
             val write = workers.submit { process.outputStream.use { it.write(bytes) } }
-            check(process.waitFor(15, TimeUnit.SECONDS)) { "Recovery helper timeout" }
-            check(process.exitValue() == 0) { "Recovery protection failed" }
+            if (!process.waitFor(timeoutMillis, TimeUnit.MILLISECONDS)) throw ProtectionUnavailableException()
             write.get(1, TimeUnit.SECONDS)
-            return output.get(1, TimeUnit.SECONDS).also { check(it.isNotEmpty()) }
+            val result = output.get(1, TimeUnit.SECONDS)
+            val exit = process.exitValue()
+            if (!encrypt && exit == 3 && result.isEmpty()) throw DecryptionRejectedException()
+            if (exit != 0 || result.isEmpty()) {
+                result.fill(0); throw ProtectionUnavailableException()
+            }
+            return result
+        } catch (failure: DecryptionRejectedException) {
+            throw failure
+        } catch (failure: Exception) {
+            if (failure is InterruptedException) Thread.currentThread().interrupt()
+            throw if (failure is ProtectionUnavailableException) failure else ProtectionUnavailableException(failure)
         } finally {
             if (process.isAlive) process.destroyForcibly()
-            process.outputStream.close(); process.inputStream.close()
+            runCatching { process.outputStream.close() }; runCatching { process.inputStream.close() }
             workers.shutdownNow()
         }
     }
@@ -110,7 +126,8 @@ class WindowsDeltaJournal(private val directory: Path, private val protector: Dp
                 check(it.read() == -1 && revision >= 0 && device.isNotBlank() && operation.isNotBlank() && delta.isNotEmpty())
                 return RecoveryEdit(PendingEdit(device, revision, operation, instance), delta)
             }
-        } finally { plain.fill(0) }
+        } catch (failure: Exception) { throw StorageFormatException(failure) }
+        finally { plain.fill(0) }
     }
     @Synchronized override fun save(edit: RecoveryEdit) {
         requireOwnership()
@@ -171,12 +188,15 @@ class WindowsDeltaJournal(private val directory: Path, private val protector: Dp
         requireOwnership(); invalidateRecoveryPreview()
         val attributes = Files.readAttributes(floorFile, BasicFileAttributes::class.java, LinkOption.NOFOLLOW_LINKS)
         check(attributes.isRegularFile) { "History must be a regular file" }
-        // Quarantine can rename an oversized/raw-unreadable file without loading its content.
-        val bytes = try { readEncrypted(floorFile) } catch (_: Exception) { null }
-        // Do not quarantine healthy history or reinterpret an absent file as corruption.
-        var unreadable = false
-        try { readFloors() } catch (_: Exception) { unreadable = true }
-        check(unreadable) { "Readable history requires identity-scoped forgetting" }
+        // Only data/key rejection or validated format failure can offer quarantine.
+        // Both reads must agree; an operational/IO failure propagates without a preview.
+        fun rejected(): Boolean = try { readFloors(); false }
+            catch (_: DecryptionRejectedException) { true }
+            catch (_: StorageFormatException) { true }
+        check(rejected()) { "Readable history requires identity-scoped forgetting" }
+        Thread.sleep(100)
+        check(rejected()) { "History is readable on retry; repair the helper or use scoped forgetting" }
+        val bytes = try { readEncrypted(floorFile) } catch (_: StorageFormatException) { null }
         previewBytes = bytes
         previewAttributes = attributes
         return HistoryRecoveryPreview(HistoryRecoveryKind.QUARANTINE_ALL, null, null,
@@ -264,7 +284,8 @@ class WindowsDeltaJournal(private val directory: Path, private val protector: Dp
                 check(input.read() == -1)
                 return floors
             }
-        } finally { plain.fill(0) }
+        } catch (failure: Exception) { throw StorageFormatException(failure) }
+        finally { plain.fill(0) }
     }
     private fun writeProtected(target: Path, plain: ByteArray) {
         val encrypted = try { protector.transform(plain, true) } finally { plain.fill(0) }
@@ -292,7 +313,8 @@ class WindowsDeltaJournal(private val directory: Path, private val protector: Dp
         val attributes = try { Files.readAttributes(path, BasicFileAttributes::class.java, LinkOption.NOFOLLOW_LINKS) }
         catch (_: NoSuchFileException) { return null }
         // Access denied and other IO errors are not equivalent to an absent history file.
-        check(attributes.isRegularFile && attributes.size() <= 131072)
-        return Files.readAllBytes(path).also { check(it.size <= 131072) }
+        check(attributes.isRegularFile) { "Recovery storage must be a regular file" }
+        if (attributes.size() !in 1..131072) throw StorageFormatException()
+        return Files.readAllBytes(path).also { if (it.size !in 1..131072) throw StorageFormatException() }
     }
 }
