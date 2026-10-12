@@ -10,3 +10,11 @@ TransportMonitorSmoke <helper.exe> <local-private-journal-directory> <10..120 se
 On first ready transport ONLY, the explicitly named fixture seeds a fake grant, snapshot and synthetic delta. Production code never does this. Disconnect revokes editing/releases snapshot; reconnect only restores transport, not a grant. Pending data stays protected locally. The fixture never writes phone files or acknowledges/replays its delta.
 Log output contains enum/boolean state only. Use a dedicated build directory and do not run this hardware fixture in public CI. Lease and journal tests in CI use fake transport reports.
 No private Android lock, application authentication or real-data recovery is implied.
+
+## Connected lease-expiry fixture
+After the explicit monitor fixture has saved its synthetic pending edit, run with JDK 17 or later:
+```text
+java -cp <poc-cli.jar> tools/LeaseExpirySmoke.java <helper.exe> <same-local-private-journal-directory>
+```
+Keep one phone connected, unlocked and in file-transfer mode. This local fixture uses the CI-built controller with a 15-second mock grant, samples real transport synchronously, ticks the controller, and observes five further seconds after expiry. Any sampled transport loss invalidates the trial. It requires the existing fake-monitor-phone/revision-1 journal and checks that its synthetic pending edit can be reloaded unchanged after expiry. It never writes phone files, renews the grant or acknowledges the delta. Success is lease-expiry-verified=1 and process exit 0.
+This driver is separate from the asynchronous monitor: it does not measure expiry latency or verify expiry during a blocked native probe. CI covers the controller's lease logic; hardware execution is manual only.

@@ -85,3 +85,13 @@ Using the same code and explicit mock-session fixture, the user left the cable c
 - File transfer restored: USB_MTP_READY, mock-can-edit=false, snapshot=false, pending=true.
 
 Observed MTP loss revoked the PC mock-session permission and released its synthetic snapshot. Restoring MTP did not renew permission or reload the snapshot; the pending synthetic delta remained recorded by the controller. Cable presence was user-confirmed rather than measured independently. No phone files were written and no Android application lock, grant or acknowledgement was exercised. The polling and private-channel limitations above still apply.
+
+## Lease expiry while MTP remains available
+The local tools/LeaseExpirySmoke.java driver invoked the same CI-built Kotlin controller/helper with a 15-second mock grant and existing encrypted synthetic journal. An initial attempt found no MTP device and stopped before granting permission; the user then prepared the phone and a fresh trial passed.
+- Initial state: USB_MTP_READY, mock-can-edit=true, snapshot=true, pending=true.
+- Expired state: USB_MTP_READY, mock-can-edit=false, snapshot=false, pending=true.
+- All sampled transport observations remained ready through five seconds after expiry.
+- The synthetic edit was reloaded from the encrypted journal and compared equal to its initial value: pending-reloaded-equal=true.
+- lease-expiry-verified=1, process exit 0.
+
+This proves controller expiry and snapshot release despite continued sampled MTP availability, and retained synthetic journal contents. Sampling cannot prove uninterrupted physical attachment between observations. Expiry latency and blocked-probe scheduling were not measured by this synchronous driver. No phone files, real application data or private Android session code were involved; actual app lock and authenticated grant renewal remain unverified.
