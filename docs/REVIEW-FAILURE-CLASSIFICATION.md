@@ -20,7 +20,9 @@ This allowlist deliberately favors retaining history over guessing the cause of 
 
 Before returning a quarantine preview, read again once after 100 ms under directory ownership. If readable on retry, refuse quarantine. If an operational failure occurs on either read, propagate without a preview. Only two data/key/format failures permit a preview. This is a bounded double-check, not proof that an error is permanent and not an automatic retry of mutation. Existing explicit one-use confirmation, encrypted-byte/attribute recheck, warning-before-mutation and pending retention are unchanged.
 
-Regression tests use real DPAPI for healthy data, malformed encrypted/schema data and preservation checks. Dedicated Java child processes simulate helper failure, timeout, empty/oversized replies, incomplete input, rejection followed by success and rejection followed by operational failure. No device or real dataset is accessed. Verification results are recorded below after CI.
+Regression tests use real DPAPI for healthy data, malformed encrypted/schema data and preservation checks. Dedicated Java child processes simulate helper failure, timeout, empty/oversized replies, incomplete input, rejection followed by success and rejection followed by operational failure. No device or real dataset is accessed.
+
+Windows CI passed for implementation/test commit b2fa81b3a41e19152f82f8aa8e6d766c6ad017fc: [run 38252665835](https://github.com/Jammycheek/Every_Day_is_a_Good_Article-desktop/actions/runs/38252665835). All 74 Kotlin tests (64 existing plus 10 new regressions), two native tests, three-JVM protected recovery/floor smoke, Java 17 manual-driver compilation, native self-test and CLI packaging passed. The legacy malformed UTF-16 regression now checks StorageFormatException and its retained IllegalArgumentException cause; suspension and unchanged encrypted bytes remain required. Local native build/two tests also passed. Subsequent commit records documentation only.
 
 ## S2: persistent warning remains a declared prototype constraint
 
@@ -30,7 +32,7 @@ Normal acceptance and explicit rebaseline currently differ in local admission po
 
 ## S3: attribute-only comparison remains a declared limit
 
-For an oversized file that cannot be loaded within the bound, quarantine rechecks fileKey (when available), size and modification time. fileKey may be null; equal size/time then cannot distinguish replacement. R2 excludes cooperating writers only. Same-user external modifications with matching attributes are outside the protection; no content-equality claim is made for this path. Raw filesystem access failures are now operational and no longer enter this fallback.
+For a file outside the nonempty storage-size bound (empty or oversized), quarantine rechecks fileKey (when available), size and modification time. fileKey may be null; equal size/time then cannot distinguish replacement. R2 excludes cooperating writers only. Same-user external modifications with matching attributes are outside the protection; no content-equality claim is made for this path. Raw filesystem access failures are now operational and no longer enter this fallback.
 
 ## Next PR priority
 
