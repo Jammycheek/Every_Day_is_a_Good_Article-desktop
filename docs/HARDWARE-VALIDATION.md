@@ -41,3 +41,11 @@ With the cable left connected, the user switched the phone from file transfer to
 - After mode change: 0 WPD devices, probe exit 0.
 
 Cable presence in this case is user-confirmed, not independently measured by the WPD-only probe. A zero WPD count therefore cannot distinguish unplugged from charging-only. USB attachment, MTP availability, and application editing-session permission must remain separate observations. No file writes occurred. After the user restored file-transfer mode without unplugging: 1 WPD device, USB declaration and ancestry true, Open successful, protocol MTP: 1.00, probe exit 0. The observed sequence was 1 -> 0 -> 1 across file-transfer / charging-only / file-transfer modes. This verifies fresh read-only enumeration and Open after a mode change; it does not verify an interrupted transfer or Android editing-session renewal.
+
+## Screen lock after file-transfer access was established
+The user locked the phone while leaving USB connected and file-transfer mode enabled.
+- WPD device count remained 1; USB declaration and ancestry true.
+- Fresh read-only WPD Open succeeded; driver protocol MTP: 1.00.
+- Direct DEVICE child enumeration succeeded (exit 0) and returned one storage/root object.
+
+No file contents were read or written in this test. This demonstrates continued device/metadata access only, not full file access while locked. Initial connection while already locked, reboot-before-first-unlock and other phones/policies remain untested. Screen lock must not be interpreted as an application editing-session revocation or an MTP disconnection based on these results.
