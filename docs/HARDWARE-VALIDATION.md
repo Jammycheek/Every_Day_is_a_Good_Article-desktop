@@ -95,3 +95,12 @@ The local tools/LeaseExpirySmoke.java driver invoked the same CI-built Kotlin co
 - lease-expiry-verified=1, process exit 0.
 
 This proves controller expiry and snapshot release despite continued sampled MTP availability, and retained synthetic journal contents. Sampling cannot prove uninterrupted physical attachment between observations. Expiry latency and blocked-probe scheduling were not measured by this synchronous driver. No phone files, real application data or private Android session code were involved; actual app lock and authenticated grant renewal remain unverified.
+
+## Normal process restart with phone connected
+After the lease-expiry driver JVM exited normally, tools/RecoveryRestartCheck.java ran in a new JVM using the existing encrypted journal and the same CI-built Kotlin controller/helper.
+- The journal reloaded equal to the known synthetic fixture: restart-pending-equal=true.
+- Before transport observation: mock-can-edit=false, snapshot=false.
+- Real transport observation: USB_MTP_READY; mock-can-edit=false, snapshot=false, pending=true.
+- process-restart-recovery-verified=1; process exit 0. The driver also compiled for Java 17.
+
+This verifies synthetic pending-edit persistence across normal process termination and restart while connected, without restoring editing permission or snapshot. No grant, acknowledgement, replay or phone write occurred. Windows reboot, forced termination, interruption during journal replacement and power loss remain untested. Recovery is a pending proposal only; actual Android application recovery remains unverified.

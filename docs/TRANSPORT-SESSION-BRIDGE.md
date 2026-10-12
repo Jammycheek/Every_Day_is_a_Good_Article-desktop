@@ -18,3 +18,10 @@ java -cp <poc-cli.jar> tools/LeaseExpirySmoke.java <helper.exe> <same-local-priv
 ```
 Keep one phone connected, unlocked and in file-transfer mode. This local fixture uses the CI-built controller with a 15-second mock grant, samples real transport synchronously, ticks the controller, and observes five further seconds after expiry. Any sampled transport loss invalidates the trial. It requires the existing fake-monitor-phone/revision-1 journal and checks that its synthetic pending edit can be reloaded unchanged after expiry. It never writes phone files, renews the grant or acknowledges the delta. Success is lease-expiry-verified=1 and process exit 0.
 This driver is separate from the asynchronous monitor: it does not measure expiry latency or verify expiry during a blocked native probe. CI covers the controller's lease logic; hardware execution is manual only.
+
+## Separate-process recovery check
+After the monitor/expiry fixture exits normally, keep the phone in file-transfer mode and run:
+```text
+java -cp <poc-cli.jar> tools/RecoveryRestartCheck.java <helper.exe> <same-local-private-journal-directory>
+```
+This new JVM loads the existing encrypted fake-monitor operation and compares it with the known synthetic fixture. It requires ready real transport, checks that editing remains disabled and no snapshot is restored, and leaves the pending edit intact. Success is process-restart-recovery-verified=1 and exit 0. It issues no grant or acknowledgement and writes no phone files. This is a normal application-process restart check, not Windows reboot, forced termination or power-loss testing.
