@@ -170,7 +170,7 @@ void writeAll(IStream* stream, const std::vector<unsigned char>& bytes, bool slo
         if (!written || written > requested) throw std::runtime_error("Incomplete write");
         offset += written;
         if (slow) {
-            LocalOutput() << L"transfer-written=" << offset << L"\\n";
+            LocalOutput() << L"transfer-written=" << offset << L"\n";
             std::this_thread::sleep_for(std::chrono::seconds(1));
         }
     }
@@ -242,7 +242,7 @@ void selfTest() {
         std::vector<unsigned char> expected(size, 0x5a);
         ComPtr<IStream> memory;
         checked(CreateStreamOnHGlobal(nullptr, TRUE, &memory));
-        writeAll(memory.Get(), expected);
+        writeAll(memory.Get(), expected, size == 1);
         LARGE_INTEGER start = {};
         checked(memory->Seek(start, STREAM_SEEK_SET, nullptr));
         verify(expected, readBounded(memory.Get()));
