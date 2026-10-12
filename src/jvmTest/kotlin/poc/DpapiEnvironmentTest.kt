@@ -106,4 +106,43 @@ class DpapiEnvironmentTest {
             assertNotNull(journal.load())
         }
     }
+    @Test fun forgetEnvironmentLossWritesNoWarningConsumesTokenAndCanRetryAfterRepair() = trial { dir, _ ->
+        val history = Files.readAllBytes(dir.resolve("revision-floors.dpapi"))
+        val pending = Files.readAllBytes(dir.resolve("pending.dpapi"))
+        var failed = false
+        val protector = DpapiProtector({ encrypt -> if (encrypt && failed) fixture("exit1") else native(encrypt) }, 10000)
+        WindowsDeltaJournal(dir, protector).use { journal ->
+            val preview = journal.prepareForgetHistory(identity)!!
+            failed = true
+            assertFailsWith<ProtectionUnavailableException> { journal.recoverHistory(preview.confirmation) }
+            assertFalse(journal.historyIsIncomplete())
+            assertContentEquals(history, Files.readAllBytes(dir.resolve("revision-floors.dpapi")))
+            assertContentEquals(pending, Files.readAllBytes(dir.resolve("pending.dpapi")))
+            assertEquals(HistoryRecoveryResult.INVALID_CONFIRMATION, journal.recoverHistory(preview.confirmation))
+            assertEquals(7L, journal.revisionFloor(identity)); assertEquals(9L, journal.verifiedEpoch(identity))
+            assertEquals(0, Files.newDirectoryStream(dir, "*-quarantine-*.dpapi").use { it.count() })
+            failed = false
+            assertEquals(HistoryRecoveryResult.RECOVERED, journal.recoverHistory(journal.prepareForgetHistory(identity)!!.confirmation))
+            assertTrue(journal.historyIsIncomplete()); assertNull(journal.revisionFloor(identity)); assertNull(journal.verifiedEpoch(identity))
+            assertContentEquals(pending, Files.readAllBytes(dir.resolve("pending.dpapi")))
+        }
+    }
+    @Test fun writeFailureAfterSuccessfulCanaryStillRetainsHistoryAndConservativeWarning() = trial { dir, _ ->
+        val history = Files.readAllBytes(dir.resolve("revision-floors.dpapi"))
+        val pending = Files.readAllBytes(dir.resolve("pending.dpapi"))
+        var encryptCalls = 0
+        val protector = DpapiProtector({ encrypt ->
+            if (encrypt && ++encryptCalls == 2) fixture("exit1") else native(encrypt)
+        }, 10000)
+        WindowsDeltaJournal(dir, protector).use { journal ->
+            val preview = journal.prepareForgetHistory(identity)!!
+            assertFailsWith<ProtectionUnavailableException> { journal.recoverHistory(preview.confirmation) }
+            assertEquals(2, encryptCalls)
+            assertTrue(journal.historyIsIncomplete()) // no claim of an atomic marker/history transaction
+            assertContentEquals(history, Files.readAllBytes(dir.resolve("revision-floors.dpapi")))
+            assertContentEquals(pending, Files.readAllBytes(dir.resolve("pending.dpapi")))
+            assertEquals(HistoryRecoveryResult.INVALID_CONFIRMATION, journal.recoverHistory(preview.confirmation))
+        }
+    }
+
 }
