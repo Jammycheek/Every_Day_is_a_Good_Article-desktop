@@ -4,9 +4,10 @@ import kotlin.test.*
 class RecoveryControllerTest {
     private class Journal : DeltaJournal {
         var edit: RecoveryEdit? = null
+        var failRead = false
         var failSave = false
         var failClear = false
-        override fun load() = edit
+        override fun load(): RecoveryEdit? { check(!failRead); return edit }
         override fun save(edit: RecoveryEdit) { check(!failSave); this.edit = edit }
         override fun clear() { check(!failClear); edit = null }
     }
@@ -14,6 +15,20 @@ class RecoveryControllerTest {
         observeTransport(true)
         acceptGrant(Grant("fake-phone", "s1", 7, 100), 0)
         loadSyntheticSnapshot(byteArrayOf(1, 2, 3), 0)
+    }
+    @Test fun unreadableJournalStopsEditingWithoutDiscardingRecord() {
+        val journal = Journal(); val pc = ready(journal)
+        pc.stage("op1", "synthetic-change", 1); journal.failRead = true
+        assertFailsWith<IllegalStateException> { pc.pending }
+        assertFalse(pc.hasSnapshot); assertFalse(pc.canEdit(2))
+        journal.failRead = false
+        assertNotNull(pc.pending)
+    }
+    @Test fun secondEditCannotOverwritePendingDelta() {
+        val journal = Journal(); val pc = ready(journal)
+        pc.stage("op1", "original-change", 1)
+        assertFailsWith<IllegalStateException> { pc.stage("op2", "replacement-change", 2) }
+        assertEquals("original-change", pc.pending?.syntheticDelta)
     }
     @Test fun detachDropsSnapshotAndPermissionButPreservesDelta() {
         val journal = Journal(); val pc = ready(journal)
