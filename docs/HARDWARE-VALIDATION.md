@@ -59,3 +59,10 @@ Started a new random-named 64 KiB synthetic file in the dedicated folder, writin
 - Revert was attempted best-effort; remote rollback or absence of a partial object is not established.
 
 After the user reconnected, unlocked, and restored file-transfer mode, fresh device/folder enumeration succeeded: one device, both USB checks true, WPD Open successful, protocol MTP: 1.00. The dedicated folder contained the two prior successful synthetic files and no additional synthetic file was visible (listing limit not reached). This is evidence of no visible partial object in this trial, not guaranteed rollback or proof of no hidden/internal remnants. A newly named 65536-byte fixture then passed write/commit/readback, byte equality and exit 0. Three successful synthetic files now remain for manual cleanup. Existing files were neither modified nor deleted. This validates the helper's synthetic transport failure path only, not Android editing locks, persistent unacknowledged application deltas or real-data recovery.
+
+## Reconnect while screen remains locked
+The user locked the phone, unplugged USB, and reconnected without unlocking.
+- Fresh WPD enumeration returned 0 devices, exit 0.
+- No device Open or storage enumeration could be attempted; no files were read or written.
+
+This differs from locking after file-transfer access had been established, where device/metadata access remained available. The observation is limited to this phone and its current USB settings; it does not establish whether the cause was lock policy, USB-mode reset, or another device policy. WPD absence is not proof of cable disconnection. Unlocking without unplugging and confirming USB mode is the next check; reboot-before-first-unlock remains untested.
