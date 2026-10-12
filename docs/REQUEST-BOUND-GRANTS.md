@@ -47,7 +47,7 @@ Normal and explicit baseline acceptance share all protocol checks; only local ad
 ## Remaining issues
 
 1. T2: unreadable pending journals/key loss still have no confirmed quarantine/export exit. Pending discard cannot preview unreadable content. Resolve before real-data use.
-2. T1: environment/key failure may still be classified as ciphertext/key rejection for history quarantine; the proposed encrypt/decrypt canary is not implemented.
+2. T1 follow-up now gates history quarantine on a fresh current-environment protect/unprotect canary, also rechecked on confirmation; see REVIEW-DPAPI-ENVIRONMENT.md. Success cannot prove historical-key availability or file integrity. Q1 legacy epoch resurrection remains open.
 3. Private peer authentication, all-writer epoch fencing, incarnation lifecycle, authoritative duration semantics, apply/status crash consistency and operation submission state remain requirements.
 4. OS sleep/resume, helper-induced tick delay, actual power loss, long-term retention and S2 warning scope/clear policy remain unverified or undecided. Shared capacity is 256; there is no automatic eviction. Long.MAX_VALUE epoch exhaustion requires confirmed recovery or a corrected authoritative incarnation.
 

@@ -37,3 +37,5 @@ For a file outside the nonempty storage-size bound (empty or oversized), quarant
 ## Next PR priority
 
 Implement synthetic request-bound grants (nonce, epoch, validity duration and conservative local deadline) and rejection tests for late replies, other requests and stale epochs before further PC storage features or confirmation UI. Phone epoch fencing, trust/pairing, actual lock/status/apply and private integration remain separate acceptance requirements. This document schedules no real-data use or main merge.
+
+T1 follow-up gates quarantine preview and confirmed archive moves on a fresh DPAPI environment round trip. See REVIEW-DPAPI-ENVIRONMENT.md for the rule and historical-key limitations. Raw decryption rejection is still not proof of corruption.
