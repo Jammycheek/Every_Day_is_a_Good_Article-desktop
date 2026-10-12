@@ -1,6 +1,6 @@
 # USB-MTP / editing-session PoC plan
 
-Status: preparation and synthetic session model. NOT a working MTP client or Android lock.
+Status: synthetic session model plus a Windows WPD probe. Hardware unverified; no Android lock.
 Baseline: main 20133cb732dead6017254a11b7b1731b36d9c9e2; initial README, Apache-2.0 LICENSE, .gitignore; no issues or PRs at inspection on 2026-10-12.
 
 ## Scope
@@ -13,7 +13,7 @@ Three independent boundaries:
 3. SessionChannel: authenticated request/grant/renew/release and applied acknowledgement from the private app. MTP presence cannot grant editing rights.
 
 Windows WPD device enumeration is an implementation candidate, not proof of USB: WPD also supports other transports. Verify the device transport property and corroborate PnP attachment; unsupported/unknown stays unknown. A filename, friendly name, or connection event is not application identity.
-Native WPD adapter and bridge choice remain open until a native smoke test confirms enumeration and stream transfer. Do not treat MTP as a mounted filesystem or assume atomic rename / instant visibility.
+A separate Windows C++ WPD helper implements device/child enumeration and a bounded synthetic round trip. Kotlin launches it as a process; hardware confirmation remains pending. Do not treat MTP as a mounted filesystem or assume atomic rename / instant visibility.
 
 ## Safety and protocol proposal (requires private Android review)
 Phone remains authoritative. Phone serializes editing and grants a bounded lease only after it commits its own lock.
@@ -39,7 +39,7 @@ Go/no-go: B+C demonstrate actual transport; E demonstrates lock safety. A alone 
 
 ## Current limitations
 Local shell and alternate runtime failed before executing due to MXC volume E: filesystem error (1005). Build/tests/hardware have not been run locally.
-No native adapter, durable journal, authentication, real phone lock, real transfer or Compose UI yet. This core is a reviewable synthetic scaffold, not production synchronization.
+The native helper and Kotlin process runner are implemented. Durable journal, authentication, real phone lock and Compose UI are not implemented. Actual phone transfer remains unverified. See WINDOWS-PROBE.md. This is not production synchronization.
 Build with Gradle 8.12.1 and JDK 17: gradle jvmTest. No Gradle wrapper generated because local execution is unavailable.
 
 ## References

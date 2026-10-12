@@ -21,3 +21,4 @@ jobs:
       - run: cmake -S native/windows -B build/native -A x64
       - run: cmake --build build/native --config Release
       - run: ctest --test-dir build/native -C Release --output-on-failure
+      - run: gradle --no-daemon runWindowsProbe -PprobeCommand=self-test
