@@ -6,7 +6,7 @@ data class PendingEdit(val device: String, val baseRevision: Long, val operation
     val datasetInstance: String? = null)
 
 /** [submitted] is persisted before the edit is sent: a submitted edit is never edited again, only reconciled. */
-data class RecoveryEdit(val metadata: PendingEdit, val syntheticDelta: String, val submitted: Boolean = false) {
+data class RecoveryEdit @JvmOverloads constructor(val metadata: PendingEdit, val syntheticDelta: String, val submitted: Boolean = false) {
     init {
         requireWellFormedUtf16(metadata.device)
         requireWellFormedUtf16(metadata.operation)
