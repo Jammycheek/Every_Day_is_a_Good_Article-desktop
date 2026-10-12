@@ -74,9 +74,23 @@ class RecoveryController(private val journal: DeltaJournal) {
         if (!available) releaseSnapshot()
     }
     fun acceptGrant(grant: Grant, now: Long) {
+        acceptGrantInternal(grant, now, false)
+    }
+    /** Future caller MUST authenticate a new request/current revision, never reuse a cached grant.
+     * This explicit synthetic path is not authentication or evidence of current phone state.
+     */
+    fun acceptFreshHistoryBaseline(grant: Grant, now: Long) {
+        acceptGrantInternal(grant, now, true)
+    }
+    private fun acceptGrantInternal(grant: Grant, now: Long, rebaseline: Boolean) {
         val edit = readJournal()
         val identity = DatasetIdentity(grant.device, grant.datasetInstance)
-        val floor = try { journal.revisionFloor(identity) } catch (failure: Exception) {
+        val recovery = journal as? RevisionHistoryRecoveryJournal
+        val floor = try {
+            val required = recovery?.historyRecoveryRequired(identity) == true
+            check(required == rebaseline) { "History recovery requires an explicit fresh baseline" }
+            journal.revisionFloor(identity)
+        } catch (failure: Exception) {
             suspendSession(); throw failure
         }
         check(floor == null || grant.baseRevision >= floor) { "Grant revision below verified floor" }
@@ -86,10 +100,29 @@ class RecoveryController(private val journal: DeltaJournal) {
         try {
             // Serialized calls: do not report the grant accepted until its verified revision is retained.
             journal.recordAppliedRevision(identity, grant.baseRevision)
+            if (rebaseline) recovery!!.finishHistoryRebaseline(identity)
         } catch (failure: Exception) {
             suspendSession(); throw failure
         }
     }
+    val revisionHistoryIncomplete: Boolean get() = historyCall { historyIsIncomplete() }
+    fun revisionHistoryNeedsBaseline(identity: DatasetIdentity): Boolean = historyCall { historyRecoveryRequired(identity) }
+    fun revisionHistoryEntries(): Map<DatasetIdentity, Long> = historyCall { revisionHistoryEntries() }
+    fun prepareForgetRevisionHistory(identity: DatasetIdentity): HistoryRecoveryPreview? =
+        historyCall { prepareForgetHistory(identity) }
+    fun prepareQuarantineRevisionHistory(): HistoryRecoveryPreview = historyCall { prepareQuarantineHistory() }
+    fun cancelRevisionHistoryRecovery(confirmation: HistoryRecoveryConfirmation) {
+        historyCall { cancelHistoryRecovery(confirmation) }
+    }
+    /** Caller must obtain affirmative consent for the preview's loss of rollback protection. */
+    fun recoverRevisionHistory(confirmation: HistoryRecoveryConfirmation): HistoryRecoveryResult {
+        // Suspend even for an invalid recovery request: this is an explicit maintenance operation.
+        suspendSession(); discardPreview = null
+        return historyCall { recoverHistory(confirmation) }
+    }
+    private fun <T> historyCall(action: RevisionHistoryRecoveryJournal.() -> T): T = try {
+        (journal as? RevisionHistoryRecoveryJournal ?: error("History recovery unsupported")).action()
+    } catch (failure: Exception) { suspendSession(); throw failure }
     fun loadSyntheticSnapshot(bytes: ByteArray, now: Long) {
         check(canEdit(now))
         releaseSnapshot()

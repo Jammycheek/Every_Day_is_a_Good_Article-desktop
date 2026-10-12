@@ -8,6 +8,7 @@ import java.nio.channels.OverlappingFileLockException
 import java.nio.file.*
 import java.nio.file.attribute.*
 import java.util.concurrent.*
+import java.util.UUID
 
 class DpapiProtector(private val helper: Path) {
     fun transform(bytes: ByteArray, encrypt: Boolean): ByteArray {
@@ -46,12 +47,16 @@ class DpapiProtector(private val helper: Path) {
 class JournalInUseException : IllegalStateException("Recovery directory is already in use")
 
 /** Owns one recovery directory until close/process exit. Callers must still serialize controller calls. */
-class WindowsDeltaJournal(private val directory: Path, private val protector: DpapiProtector) : DeltaJournal, AutoCloseable {
+class WindowsDeltaJournal(private val directory: Path, private val protector: DpapiProtector) : RevisionHistoryRecoveryJournal, AutoCloseable {
     private val file = directory.resolve("pending.dpapi")
     private val floorFile = directory.resolve("revision-floors.dpapi")
     private val lockChannel: FileChannel
     private val directoryLock: FileLock
     private var closed = false
+    private val warningFile = directory.resolve("history-incomplete.warning")
+    private val baselineFile = directory.resolve("history-rebaseline.required")
+    private var recoveryPreview: HistoryRecoveryPreview? = null
+    private var previewBytes: ByteArray? = null
     init {
         Files.createDirectories(directory)
         check(!Files.isSymbolicLink(directory))
@@ -80,6 +85,7 @@ class WindowsDeltaJournal(private val directory: Path, private val protector: Dp
     @Synchronized override fun close() {
         if (closed) return
         closed = true
+        invalidateRecoveryPreview()
         try { directoryLock.release() } finally { lockChannel.close() }
         // Never unlink the lock file: replacing its file identity could create two lock owners.
     }
@@ -131,6 +137,9 @@ class WindowsDeltaJournal(private val directory: Path, private val protector: Dp
         val previous = floors[identity]
         if (previous != null && previous >= revision) return
         floors[identity] = revision
+        writeFloors(floors)
+    }
+    private fun writeFloors(floors: Map<DatasetIdentity, Long>) {
         require(floors.size <= 256) { "Revision floor capacity exceeded" }
         val buffer = ByteArrayOutputStream()
         DataOutputStream(buffer).use { output ->
@@ -141,6 +150,86 @@ class WindowsDeltaJournal(private val directory: Path, private val protector: Dp
             }
         }
         writeProtected(floorFile, buffer.toByteArray())
+    }
+    private fun invalidateRecoveryPreview() {
+        recoveryPreview = null
+        previewBytes?.fill(0); previewBytes = null
+    }
+    @Synchronized override fun revisionHistoryEntries(): Map<DatasetIdentity, Long> {
+        requireOwnership(); return readFloors()
+    }
+    @Synchronized override fun prepareForgetHistory(identity: DatasetIdentity): HistoryRecoveryPreview? {
+        requireOwnership(); invalidateRecoveryPreview()
+        val bytes = readEncrypted(floorFile) ?: return null
+        val floor = readFloors()[identity] ?: return null
+        previewBytes = bytes
+        return HistoryRecoveryPreview(HistoryRecoveryKind.FORGET_IDENTITY, identity, floor,
+            HistoryRecoveryConfirmation()).also { recoveryPreview = it }
+    }
+    @Synchronized override fun prepareQuarantineHistory(): HistoryRecoveryPreview {
+        requireOwnership(); invalidateRecoveryPreview()
+        val bytes = readEncrypted(floorFile) ?: error("No history to quarantine")
+        // Do not quarantine healthy history or reinterpret an absent file as corruption.
+        var unreadable = false
+        try { readFloors() } catch (_: Exception) { unreadable = true }
+        check(unreadable) { "Readable history requires identity-scoped forgetting" }
+        previewBytes = bytes
+        return HistoryRecoveryPreview(HistoryRecoveryKind.QUARANTINE_ALL, null, null,
+            HistoryRecoveryConfirmation()).also { recoveryPreview = it }
+    }
+    @Synchronized override fun cancelHistoryRecovery(confirmation: HistoryRecoveryConfirmation) {
+        requireOwnership()
+        if (recoveryPreview?.confirmation === confirmation) invalidateRecoveryPreview()
+    }
+    @Synchronized override fun recoverHistory(confirmation: HistoryRecoveryConfirmation): HistoryRecoveryResult {
+        requireOwnership()
+        val preview = recoveryPreview
+        if (preview == null || preview.confirmation !== confirmation) return HistoryRecoveryResult.INVALID_CONFIRMATION
+        val expected = previewBytes!!
+        recoveryPreview = null; previewBytes = null // one use, including failures
+        try {
+            val current = readEncrypted(floorFile)
+            if (current == null || !current.contentEquals(expected)) return HistoryRecoveryResult.CHANGED
+            // Durable generic markers precede destructive history changes. No identifiers/plaintext payload.
+            writeMarker(warningFile); writeMarker(baselineFile)
+            when (preview.kind) {
+                HistoryRecoveryKind.FORGET_IDENTITY -> {
+                    val floors = readFloors().toMutableMap()
+                    check(floors.remove(preview.identity!!) == preview.previousFloor)
+                    writeFloors(floors)
+                }
+                HistoryRecoveryKind.QUARANTINE_ALL -> {
+                    val quarantine = directory.resolve("revision-floors-quarantine-${UUID.randomUUID()}.dpapi")
+                    Files.move(floorFile, quarantine, StandardCopyOption.ATOMIC_MOVE)
+                    // Keep original encrypted bytes and ACL. No automatic restore, promotion or deletion.
+                }
+            }
+            return HistoryRecoveryResult.RECOVERED
+        } finally { expected.fill(0) }
+    }
+    @Synchronized override fun historyRecoveryRequired(identity: DatasetIdentity): Boolean {
+        requireOwnership()
+        return readMarker(baselineFile) && readFloors()[identity] == null
+    }
+    @Synchronized override fun historyIsIncomplete(): Boolean { requireOwnership(); return readMarker(warningFile) }
+    @Synchronized override fun finishHistoryRebaseline(identity: DatasetIdentity) {
+        requireOwnership(); check(readMarker(baselineFile)); check(readFloors()[identity] != null)
+        // Markers remain: baselining one identity must not unblock another lost/unknown identity.
+    }
+    private fun readMarker(path: Path): Boolean {
+        val bytes = readEncrypted(path) ?: return false
+        check(bytes.contentEquals(byteArrayOf(1))) { "Invalid history recovery marker" }
+        return true
+    }
+    private fun writeMarker(target: Path) {
+        val temporary = Files.createTempFile(directory, "history-marker-", ".tmp")
+        try {
+            restrict(temporary)
+            FileChannel.open(temporary, StandardOpenOption.WRITE).use { channel ->
+                channel.write(ByteBuffer.wrap(byteArrayOf(1))); channel.force(true)
+            }
+            Files.move(temporary, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+        } finally { Files.deleteIfExists(temporary) }
     }
     private fun readFloors(): Map<DatasetIdentity, Long> {
         val encrypted = readEncrypted(floorFile) ?: return emptyMap()
