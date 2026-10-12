@@ -10,6 +10,7 @@ Scope: synthetic public PoC. A rejected, unknown or conflicting operation can re
 5. Successful discard suspends the session, releases its snapshot and removes only the local pending journal. It neither alters the phone nor clears the protected revision-floor history, creates a grant, restores a snapshot, resends or cancels an operation. Authenticate/query current state again and obtain an explicit fresh grant and snapshot before editing; the stored floor still rejects older grants. New edits must have fresh operation IDs in the production design.
 
 ## Results and failure behavior
+R1 separately adds confirmed revision-floor recovery; see REVIEW-HISTORY-RECOVERY.md. Pending discard itself still never resets history. Unreadable pending-edit quarantine/export remains unimplemented.
 | Result | Meaning | Session and storage |
 | --- | --- | --- |
 | DISCARDED | Preview matches the current readable record and deletion succeeded | Session suspended, snapshot released, pending removed, floors retained |
@@ -18,7 +19,7 @@ Scope: synthetic public PoC. A rejected, unknown or conflicting operation can re
 | CHANGED | Metadata or exact content changed since preview | Current pending and session unchanged; token consumed; new preview and confirmation required |
 | Exception on read/delete | Storage/decryption/parse/delete failed | Editing suspended; failure propagates; no success reported; token consumed; no automatic retry or recovery-file removal |
 
-Preparing an unreadable record fails, suspends editing and preserves its encrypted bytes. Readable unbound legacy records can be explicitly abandoned without assigning a guessed incarnation. Discard does not read, reset or rewrite the revision-floor file: even if that file is corrupt, future grants remain blocked by its read failure. A separate reviewed quarantine/export process is required for unreadable records/history.
+Preparing an unreadable record fails, suspends editing and preserves its encrypted bytes. Readable unbound legacy records can be explicitly abandoned without assigning a guessed incarnation. Discard does not read, reset or rewrite the revision-floor file: even if that file is corrupt, future grants remain blocked by its read failure. R1 now supplies separately confirmed floor-history quarantine/rebaseline (see REVIEW-HISTORY-RECOVERY.md); unreadable pending records still need a separate quarantine/export design.
 
 The only supported concurrency model remains one serialized controller/writer. WindowsDeltaJournal now holds exclusive directory ownership across the entire preview/confirmation interval; another cooperating journal cannot modify either protected file. See REVIEW-DIRECTORY-OWNERSHIP.md. In-process stage invalidates outstanding previews. Preview comparison alone is not a lock; external edits, old unlocked binaries, malicious same-user access and equal-content replacement/ABA outside the ownership protocol remain out of scope. File deletion is logical removal, not forensic secure erasure; protected remnants, backups and orphan temporary files follow the unresolved retention policy.
 

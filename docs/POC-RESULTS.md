@@ -38,4 +38,6 @@ The N2 follow-up adds explicit synthetic dataset incarnation and protected revis
 The N4 follow-up adds one-use, preview-bound explicitly confirmed local discard for readable blocked pending edits, retaining revision floors and requiring a fresh grant/snapshot. See [REVIEW-PENDING-DISCARD.md](REVIEW-PENDING-DISCARD.md). This is a synthetic API; actual confirmation UI, export/rebase and unreadable-record recovery remain open.
 
 ## Local artifacts
+The R1 follow-up adds confirmed scoped history forgetting and whole-file quarantine without touching pending edits, plus persistent warning/explicit per-key baseline requirements. See [REVIEW-HISTORY-RECOVERY.md](REVIEW-HISTORY-RECOVERY.md). This is synthetic API validation; actual UI, authenticated fresh-state acquisition and real profile/key-loss recovery remain unverified.
+
 Three successful synthetic files remain in the phone's dedicated EveryArticle-PoC folder for optional manual cleanup. Local ignored build directories contain synthetic encrypted journals, a deliberately damaged copy and logs; none were published. No test process is intentionally left running, and no further phone connection is required for document/contract review. E: was not used.

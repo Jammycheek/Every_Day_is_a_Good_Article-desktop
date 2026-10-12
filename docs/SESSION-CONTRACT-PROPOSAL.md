@@ -65,6 +65,7 @@ The PoC rejects unpaired surrogates so distinct malformed strings cannot collaps
 The polling bridge can miss rapid unplug/replug; private session validation and authoritative revision checks must still protect apply. Windows recovery-directory ownership now excludes a second cooperating process/instance; see REVIEW-DIRECTORY-OWNERSHIP.md. Persistence interrupted during save, history recovery/retention and power-loss durability need separate work before real data.
 
 ## Private integration acceptance tests
+The R1 synthetic API now supports explicitly confirmed history forgetting/quarantine and rejects ordinary grants for missing keys after history loss. Private integration must query current authoritative state and bind a fresh replay-protected grant before calling acceptFreshHistoryBaseline; its name/input do not authenticate freshness. A history-loss warning remains after baseline establishment and after restart. See REVIEW-HISTORY-RECOVERY.md. Pending edits are not silently resolved by history recovery, and a reused authoritative incarnation remains a private-side bug.
 | Scenario | Required outcome |
 | --- | --- |
 | Unauthorized peer / forged or stale grant | No lock grant, no PC editing |
