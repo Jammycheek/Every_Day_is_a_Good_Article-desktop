@@ -12,14 +12,14 @@ class RecoveryController(private val journal: DeltaJournal) {
     private val gate = SessionGate()
     private var snapshot: ByteArray? = null
     val hasSnapshot: Boolean get() = snapshot != null
-    val pending: RecoveryEdit? get() = journal.load()
+    val pending: RecoveryEdit? get() = readJournal()
 
     fun observeTransport(available: Boolean) {
         gate.observeTransport(available)
         if (!available) releaseSnapshot()
     }
     fun acceptGrant(grant: Grant, now: Long) {
-        val edit = journal.load()
+        val edit = readJournal()
         check(edit == null || (edit.metadata.device == grant.device && edit.metadata.baseRevision == grant.baseRevision))
         gate.acceptGrant(grant, now)
     }
@@ -38,7 +38,7 @@ class RecoveryController(private val journal: DeltaJournal) {
     fun tick(now: Long) { canEdit(now) }
     fun stage(operation: String, syntheticDelta: String, now: Long) {
         check(canEdit(now) && hasSnapshot)
-        check(journal.load() == null)
+        check(readJournal() == null)
         require(operation.isNotBlank() && syntheticDelta.isNotEmpty())
         val grant = gate.grant!!
         val edit = RecoveryEdit(PendingEdit(grant.device, grant.baseRevision, operation), syntheticDelta)
@@ -51,14 +51,14 @@ class RecoveryController(private val journal: DeltaJournal) {
     }
     /** Recovery remains a pending proposal. Never automatically replay it to the phone. */
     fun recoveryCandidate(device: String, revision: Long): RecoveryEdit? {
-        val edit = journal.load() ?: return null
+        val edit = readJournal() ?: return null
         check(edit.metadata.device == device && edit.metadata.baseRevision == revision)
         return edit
     }
     fun acknowledge(device: String, session: String, operation: String, now: Long) {
         check(canEdit(now))
         val grant = gate.grant!!
-        val edit = journal.load() ?: error("No pending edit")
+        val edit = readJournal() ?: error("No pending edit")
         check(grant.device == device && grant.session == session && edit.metadata.operation == operation)
         try {
             journal.clear() // only after a validated applied ack; clear failure retains pending recovery
@@ -67,6 +67,12 @@ class RecoveryController(private val journal: DeltaJournal) {
     fun suspendSession() {
         gate.suspendSession()
         releaseSnapshot()
+    }
+    private fun readJournal(): RecoveryEdit? = try {
+        journal.load()
+    } catch (failure: Exception) {
+        suspendSession()
+        throw failure
     }
     private fun releaseSnapshot() {
         snapshot?.fill(0)
