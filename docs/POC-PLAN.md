@@ -1,6 +1,6 @@
 # USB-MTP / editing-session PoC plan
 
-Status: synthetic session model plus a Windows WPD probe. Hardware unverified; no Android lock.
+Status: Windows transport hardware validated on one phone; synthetic PC recovery implemented. No private Android lock.
 Baseline: main 20133cb732dead6017254a11b7b1731b36d9c9e2; initial README, Apache-2.0 LICENSE, .gitignore; no issues or PRs at inspection on 2026-10-12.
 
 ## Scope
@@ -38,8 +38,8 @@ Proceed to B only after the execution environment and a real Windows adapter are
 Go/no-go: B+C demonstrate actual transport; E demonstrates lock safety. A alone cannot pass either hardware or Android integration.
 
 ## Current limitations
-Local shell and alternate runtime failed before executing due to MXC volume E: filesystem error (1005). Build/tests/hardware have not been run locally.
-The native helper and Kotlin process runner are implemented. Durable journal, authentication, real phone lock and Compose UI are not implemented. Actual phone transfer remains unverified. See WINDOWS-PROBE.md. This is not production synchronization.
+Default sandbox launcher fails on encrypted virtual E:, but a C: execution path and VS2019 native build/tests now work. E: is not used. See HARDWARE-VALIDATION.md and RECOVERY-POC.md for verified scope.
+The native helper and Kotlin process runner are implemented. User-scope DPAPI protection for one synthetic delta and a PC recovery controller are implemented. Real-phone synthetic transfer and failure/recovery evidence are in HARDWARE-VALIDATION.md. Authentication, real phone lock and Compose UI are not implemented. See WINDOWS-PROBE.md. This is not production synchronization.
 Build with Gradle 8.12.1 and JDK 17: gradle jvmTest. No Gradle wrapper generated because local execution is unavailable.
 
 ## References
