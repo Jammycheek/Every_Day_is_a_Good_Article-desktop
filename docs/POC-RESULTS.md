@@ -31,6 +31,7 @@ Work remains on poc/usb-mtp-session-preparation and draft PR #1. Main remains at
 4. Build the Compose diagnostic UI with independent transport/session/pending states after the core boundary is agreed. No Compose UI exists yet. macOS/Linux need transport and protected-storage adapters.
 
 The next recommended phase is private session-contract review, not enabling real-data editing. Lost applied acknowledgements must be resolved by querying Android operation status before any retry. Local DPAPI/ACL protection does not address same-user malware or every memory copy.
+The platform-neutral review draft is [SESSION-CONTRACT-PROPOSAL.md](SESSION-CONTRACT-PROPOSAL.md). It does not implement or finalize the private channel.
 
 ## Local artifacts
 Three successful synthetic files remain in the phone's dedicated EveryArticle-PoC folder for optional manual cleanup. Local ignored build directories contain synthetic encrypted journals, a deliberately damaged copy and logs; none were published. No test process is intentionally left running, and no further phone connection is required for document/contract review. E: was not used.
