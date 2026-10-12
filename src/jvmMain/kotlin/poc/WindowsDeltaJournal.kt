@@ -66,6 +66,7 @@ class JournalInUseException : IllegalStateException("Recovery directory is alrea
 class WindowsDeltaJournal(private val directory: Path, private val protector: DpapiProtector) : RevisionHistoryRecoveryJournal, AutoCloseable {
     private val file = directory.resolve("pending.dpapi")
     private val floorFile = directory.resolve("revision-floors.dpapi")
+    private val epochFile = directory.resolve("grant-epochs.dpapi")
     private val lockChannel: FileChannel
     private val directoryLock: FileLock
     private var closed = false
@@ -156,17 +157,28 @@ class WindowsDeltaJournal(private val directory: Path, private val protector: Dp
         floors[identity] = revision
         writeFloors(floors)
     }
-    private fun writeFloors(floors: Map<DatasetIdentity, Long>) {
+    @Synchronized override fun verifiedEpoch(identity: DatasetIdentity): Long? {
+        requireOwnership(); return readRevisions(epochFile, 0x45414531)[identity]
+    }
+    @Synchronized override fun recordVerifiedEpoch(identity: DatasetIdentity, epoch: Long) {
+        requireOwnership(); require(epoch >= 0)
+        val epochs = readRevisions(epochFile, 0x45414531).toMutableMap()
+        if (epochs[identity]?.let { it >= epoch } == true) return
+        epochs[identity] = epoch
+        writeRevisions(epochFile, 0x45414531, epochs)
+    }
+    private fun writeFloors(floors: Map<DatasetIdentity, Long>) = writeRevisions(floorFile, 0x45414631, floors)
+    private fun writeRevisions(target: Path, magic: Int, floors: Map<DatasetIdentity, Long>) {
         require(floors.size <= 256) { "Revision floor capacity exceeded" }
         val buffer = ByteArrayOutputStream()
         DataOutputStream(buffer).use { output ->
-            output.writeInt(0x45414631); output.writeInt(floors.size)
+            output.writeInt(magic); output.writeInt(floors.size)
             floors.entries.sortedWith(compareBy({ it.key.device }, { it.key.incarnation })).forEach { (key, value) ->
                 require(listOf(key.device, key.incarnation).all { it.toByteArray(Charsets.UTF_8).size <= 4096 })
                 output.writeUTF(key.device); output.writeUTF(key.incarnation); output.writeLong(value)
             }
         }
-        writeProtected(floorFile, buffer.toByteArray())
+        writeProtected(target, buffer.toByteArray())
     }
     private fun invalidateRecoveryPreview() {
         recoveryPreview = null
@@ -267,12 +279,13 @@ class WindowsDeltaJournal(private val directory: Path, private val protector: Dp
             Files.move(temporary, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
         } finally { Files.deleteIfExists(temporary) }
     }
-    private fun readFloors(): Map<DatasetIdentity, Long> {
-        val encrypted = readEncrypted(floorFile) ?: return emptyMap()
+    private fun readFloors(): Map<DatasetIdentity, Long> = readRevisions(floorFile, 0x45414631)
+    private fun readRevisions(path: Path, magic: Int): Map<DatasetIdentity, Long> {
+        val encrypted = readEncrypted(path) ?: return emptyMap()
         val plain = protector.transform(encrypted, false)
         try {
             DataInputStream(ByteArrayInputStream(plain)).use { input ->
-                check(input.readInt() == 0x45414631) { "Unsupported revision floor version" }
+                check(input.readInt() == magic) { "Unsupported protected revision version" }
                 val count = input.readInt(); check(count in 0..256)
                 val floors = mutableMapOf<DatasetIdentity, Long>()
                 repeat(count) {
@@ -292,6 +305,7 @@ class WindowsDeltaJournal(private val directory: Path, private val protector: Dp
         val prefix = when (target) {
             file -> "pending-"
             floorFile -> "floor-"
+            epochFile -> "grant-epoch-"
             else -> error("Unknown protected storage target")
         }
         val temporary = Files.createTempFile(directory, prefix, ".tmp")

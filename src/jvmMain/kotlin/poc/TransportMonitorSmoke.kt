@@ -44,7 +44,10 @@ object TransportMonitorSmoke {
                                     link.observe(request, sample, started, now())
                                     if (!seeded && link.state == TransportState.USB_MTP_READY) {
                                         // This fixture models a grant. Transport alone never grants in production.
-                                        pc.acceptGrant(Grant("fake-monitor-phone", "mock-monitor-session", 1, now() + 180000, "fake-dataset-v1"), now())
+                                        val sent = now()
+                                        val bound = pc.beginGrantRequest(DatasetIdentity("fake-monitor-phone", "fake-dataset-v1"), sent, 180000, 0)
+                                        pc.acceptGrant(Grant("fake-monitor-phone", "mock-monitor-session", 1, 180000,
+                                            "fake-dataset-v1", bound.requestNonce, bound.minimumEpoch), bound, now())
                                         pc.loadSyntheticSnapshot(byteArrayOf(1, 2, 3), now())
                                         if (!hasPending) { pc.stage("fake-monitor-op", "SYNTHETIC-MONITOR-DELTA", now()); hasPending = true }
                                         seeded = true

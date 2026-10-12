@@ -1,0 +1,46 @@
+# Request-bound synthetic grants (PR #2)
+
+Based on main after the user merged PR #1 (d098f17bd3033ce8f9053ecccce9e4ea9361c063). Scope: platform-neutral synthetic grant correlation, epoch persistence and renewal validation. No Android source, real dataset, actual authentication channel, UI or power-loss implementation is added.
+
+## API and request lifecycle
+
+Grant now carries device/application identity, dataset incarnation, session, base revision, requestNonce, epoch and validityDuration in milliseconds. The old absolute expiresAt and unchecked two-argument acceptGrant are removed. Prototype consumers and manual drivers must rebuild. Pending/edit/receipt encodings and existing revision-floor format are unchanged.
+
+beginGrantRequest(identity, now, maximumDuration, safetyAllowance, renewal, rebaseline) creates one locally owned PendingGrantRequest with a 256-bit random nonce. It records the trusted local send-time **before** invoking the future carrier. This is conservative even if dispatch is later. There is at most one outstanding request. Replacement, matching cancellation, successful or rejected response attempt, suspension, transport loss, expiry of the live session or process restart invalidate it. Capabilities are checked by reference identity, not reconstructed from wire fields. JVM uses [SecureRandom](https://docs.oracle.com/en/java/javase/17/docs/api/java.base/java/security/SecureRandom.html); virtual fixtures still use generated nonces, not a bypass endpoint.
+
+acceptGrant(grant, pendingRequest, now) validates that owned capability, the nonce, identity/incarnation, revision, epoch and bounded duration. A response attempt consumes the request. Failure suspends the session and releases its snapshot; even an irrelevant grant response fails closed, so a future channel must authenticate/filter before dispatching here. Receipt reconciliation's unrelated-response behavior remains unchanged. New acquisition requires no live grant and an epoch strictly greater than the persisted maximum. Unknown keys initially have no epoch history. A new request is required after a failed acceptance, including storage failure.
+
+## Conservative deadline and storage latency
+
+deadline = local request send-time + returned validityDuration - local safetyAllowance.
+
+This requires the authoritative app to start that signed/bound duration **no earlier than receipt of the same request**. It is not correct for a pre-existing lease whose remaining time was measured before the request; real peer timing and allowance remain undecided. Returned duration must exceed the allowance and cannot exceed the locally requested maximum. A response at the deadline or later is rejected; receiving a response never resets the deadline to arrival-time plus duration.
+
+All supplied now values must use one trusted local monotonic millisecond domain per controller, including ticks, stage and snapshot calls. Raw phone/PC clocks are never compared. JVM [System.nanoTime](https://docs.oracle.com/en/java/javase/17/docs/api/java.base/java/lang/System.html#nanoTime()) supplies elapsed storage time; it has an arbitrary origin and is not persisted. Checked arithmetic rejects overflow; backwards supplied time suspends until the prior time has been reached. The public clock callback is a trusted embedding/test dependency, not peer input; virtual tests explicitly supply a frozen storage clock. Real acceptance measures elapsed blocking storage work and rechecks the deadline at completion, so a slow DPAPI write cannot report an already expired grant accepted. This still does not prove OS sleep/resume behavior, bound physical clock drift or stop an event loop from blocking; every later editing call checks expiry and periodic ticking remains required.
+
+## Durable epoch high-water mark
+
+grant-epochs.dpapi uses EAE1: bounded count <=256, logical identity/incarnation UTF strings and nonnegative Long epoch; duplicate keys/trailing bytes/invalid fields fail closed. It reuses owner-only ACL, bounded DPAPI pipe, forced encrypted temporary write, atomic replacement and R2's lifetime journal.lock. Temporary prefix is grant-epoch-. Only max(existing, verified epoch) is recorded. An acquisition uses >previous; renewal retains exactly its live epoch.
+
+After all binding/compatibility checks, persist epoch, then accepted revision, then activate the in-memory grant. No success occurs before both writes and the post-storage time check. These are two separately atomic files, not one atomic transaction: if revision persistence or the final time check fails after epoch persistence, the newer epoch remains and editing stays suspended. A fresh higher-epoch acquisition can continue after the underlying failure is repaired. No grant, nonce capability or snapshot is restored on restart. The three-JVM recovery smoke also checks that an old epoch is rejected after restart; process lock fixtures verify that a competing process cannot lower epoch history.
+
+Revision forgetting/quarantine and pending discard never reset epoch history. Rebaselining must therefore pass a fresh nonce and higher acquisition epoch too. Missing legacy epoch history is accepted as unknown, without guessing an old epoch; safety still requires fresh request binding and a future authenticated peer. Epoch storage has no eviction/reset/quarantine API. Capacity, corruption, lost keys, epoch exhaustion and authoritative incarnation/reboot rules require production policy; inaccessible epoch history blocks requests rather than guessing zero. Deliberate deletion/restoration and malicious same-user code are outside the protection. No new power-loss guarantee is claimed.
+The 256-key epoch limit is independent of revision-floor capacity: forgetting a floor does not free an epoch slot. At that limit, new keys remain blocked until a separately reviewed retention/recovery policy exists. This bounded synthetic stage does not claim indefinite production operation.
+
+## Renewal and rebaseline
+
+A renewal request can be created only while the current session is valid. It binds that identity, session, epoch and base revision. The reply must preserve all of those, extend the conservative deadline and arrive before both the old live deadline and its new deadline. Persistence that crosses the old deadline cannot revive editing. Valid renewal preserves the loaded snapshot. Revoke/disconnect/expiry/suspension cancels its capability; reconnect does not restore it. Renewal is not a new acquisition and cannot rebaseline.
+
+Normal and explicit rebaseline acceptance use the **same** protocol validation. The request's locally selected rebaseline flag must match the entry point. Only local history admission differs. S2 remains intentionally unchanged: the permanent warning makes every missing/new key require explicit baseline indefinitely. With no real trust/status channel, this PR does not shrink warning coverage or add warning reset. A fresh nonce proves correlation, not authentication or authoritative freshness on its own.
+
+## Highest remaining recovery issues
+
+1. T2: unreadable pending journal has no confirmed quarantine/export exit. Lost DPAPI keys can still block PC editing; epoch storage also needs that same environment/key recovery. No silent deletion/reset is allowed. Resolve before real-data use.
+2. T1: key/environment unavailability may still be classified as ciphertext/key rejection for revision-history quarantine. A fresh encrypt/decrypt canary and its limits need a separate change; this PR does not add it.
+3. Actual peer authentication, epoch fencing of all authoritative writers, stable incarnation lifecycle, duration semantics, status/apply crash consistency and submitted operation epoch/state remain private-side requirements. The mock reply construction in fixtures is not evidence of those.
+4. Sleep/resume, long helper-induced tick delays, power-loss durability, retention/capacity and S2 warning scope/clear policy remain unverified or undecided.
+
+## Verification
+
+Synthetic tests cover send-time deadlines/boundary lateness, wrong/reused/replaced/cancelled/foreign/restarted requests, identity/incarnation/duration errors, stale/equal acquisition epochs, epoch/write failures, post-write expiry, renewal preservation and abandonment/mismatch, arithmetic/clock rollback, actual protected epoch persistence/restart/ACL/nondecrease, history forgetting with epoch retained and unreadable epoch storage. Existing recovery and transport tests are migrated through actual request creation/validation, not an unchecked legacy grant path. Java manual hardware drivers compile against the new API; hardware observations in PR #1 are historical and not re-run here. CI evidence follows after verification.
+Local verification passed all 93 Kotlin tests (74 prior tests plus 16 request-bound and 3 Windows epoch tests), Java 17 manual-driver compilation and three separate JVM smoke processes. Kotlin 2.1.20 was invoked directly with the local JDK 25 and JVM target 17; this does not replace the Gradle/JDK 17 CI acceptance check.

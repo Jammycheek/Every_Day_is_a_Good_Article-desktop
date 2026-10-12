@@ -17,12 +17,12 @@ class RevisionHistoryRecoveryTest {
         }
     }
     private fun grant(revision: Long, instance: String = identity.incarnation) =
-        Grant(identity.device, "fresh-synthetic-$revision-$instance", revision, 100, instance)
+        FixtureGrant(identity.device, "fresh-synthetic-$revision-$instance", revision, 100, instance)
 
     @Test fun confirmedScopedForgetAllowsRollbackOnlyThroughExplicitNewBaselineAndKeepsWarning() = trial { dir, protector ->
         WindowsDeltaJournal(dir, protector).use { journal ->
-            val pc = RecoveryController(journal); pc.observeTransport(true)
-            pc.acceptGrant(grant(10), 0); pc.loadSyntheticSnapshot(byteArrayOf(1), 0)
+            val pc = testController(journal); pc.observeTransport(true)
+            pc.acceptFixtureGrant(grant(10), 0); pc.loadSyntheticSnapshot(byteArrayOf(1), 0)
             journal.recordVerifiedRevision(other, 20)
             val preview = pc.prepareForgetRevisionHistory(identity)!!
             assertEquals(10L, preview.previousFloor); assertEquals(identity, preview.identity)
@@ -32,25 +32,25 @@ class RevisionHistoryRecoveryTest {
             assertNull(journal.revisionFloor(identity)); assertEquals(20L, journal.revisionFloor(other))
             assertTrue(pc.revisionHistoryIncomplete); assertTrue(pc.revisionHistoryNeedsBaseline(identity))
             assertFalse(pc.revisionHistoryNeedsBaseline(other))
-            assertFailsWith<IllegalStateException> { pc.acceptGrant(grant(3), 0) }
+            assertFailsWith<IllegalStateException> { pc.acceptFixtureGrant(grant(3), 0) }
             Files.write(dir.resolve("history-incomplete.warning"), byteArrayOf(9, 8, 7))
             assertTrue(pc.revisionHistoryIncomplete); assertTrue(pc.revisionHistoryNeedsBaseline(identity))
         }
         WindowsDeltaJournal(dir, protector).use { journal ->
-            val pc = RecoveryController(journal); pc.observeTransport(true)
+            val pc = testController(journal); pc.observeTransport(true)
             assertTrue(pc.revisionHistoryNeedsBaseline(identity)); assertTrue(pc.revisionHistoryIncomplete)
-            assertFailsWith<IllegalStateException> { pc.acceptGrant(grant(3), 0) }
-            pc.acceptFreshHistoryBaseline(grant(3), 0)
+            assertFailsWith<IllegalStateException> { pc.acceptFixtureGrant(grant(3), 0) }
+            pc.acceptFixtureBaseline(grant(3), 0)
             assertTrue(pc.canEdit(0)); assertFalse(pc.hasSnapshot)
             assertFalse(pc.revisionHistoryNeedsBaseline(identity)); assertTrue(pc.revisionHistoryIncomplete)
             assertEquals(3L, journal.revisionFloor(identity))
             pc.suspendSession()
         }
         WindowsDeltaJournal(dir, protector).use { journal ->
-            val pc = RecoveryController(journal); pc.observeTransport(true)
+            val pc = testController(journal); pc.observeTransport(true)
             assertTrue(pc.revisionHistoryIncomplete)
-            assertFailsWith<IllegalStateException> { pc.acceptGrant(grant(2), 0) }
-            pc.acceptGrant(grant(3), 0); assertTrue(pc.canEdit(0)); pc.suspendSession()
+            assertFailsWith<IllegalStateException> { pc.acceptFixtureGrant(grant(2), 0) }
+            pc.acceptFixtureGrant(grant(3), 0); assertTrue(pc.canEdit(0)); pc.suspendSession()
         }
     }
 
@@ -63,8 +63,8 @@ class RevisionHistoryRecoveryTest {
             val floorFile = dir.resolve("revision-floors.dpapi")
             val acl = Files.getFileAttributeView(floorFile, java.nio.file.attribute.AclFileAttributeView::class.java).acl
             Files.write(floorFile, damaged)
-            val pc = RecoveryController(journal)
-            assertFails { pc.acceptGrant(grant(7), 0) }
+            val pc = testController(journal)
+            assertFails { pc.acceptFixtureGrant(grant(7), 0) }
             val preview = pc.prepareQuarantineRevisionHistory()
             assertEquals(HistoryRecoveryKind.QUARANTINE_ALL, preview.kind); assertNull(preview.identity)
             assertEquals(HistoryRecoveryResult.RECOVERED, pc.recoverRevisionHistory(preview.confirmation))
@@ -74,13 +74,13 @@ class RevisionHistoryRecoveryTest {
             assertEquals(1, archives.size); assertContentEquals(damaged, Files.readAllBytes(archives.single()))
             assertEquals(acl, Files.getFileAttributeView(archives.single(), java.nio.file.attribute.AclFileAttributeView::class.java).acl)
             pc.observeTransport(true)
-            assertFails { pc.acceptFreshHistoryBaseline(grant(8), 0) } // pending compatibility still blocks
+            assertFails { pc.acceptFixtureBaseline(grant(8), 0) } // pending compatibility still blocks
             assertEquals(edit, pc.pending); assertTrue(pc.revisionHistoryNeedsBaseline(identity))
             assertEquals(PendingDiscardResult.DISCARDED, pc.discardPending(pc.preparePendingDiscard()!!.confirmation))
-            pc.acceptFreshHistoryBaseline(grant(8), 0); pc.suspendSession()
+            pc.acceptFixtureBaseline(grant(8), 0); pc.suspendSession()
             assertTrue(pc.revisionHistoryNeedsBaseline(other)) // one restored identity cannot unblock all others
-            assertFails { pc.acceptGrant(grant(1, other.incarnation), 0) }
-            pc.acceptFreshHistoryBaseline(grant(1, other.incarnation), 0); pc.suspendSession()
+            assertFails { pc.acceptFixtureGrant(grant(1, other.incarnation), 0) }
+            pc.acceptFixtureBaseline(grant(1, other.incarnation), 0); pc.suspendSession()
         }
         WindowsDeltaJournal(dir, protector).use { journal ->
             assertEquals(8L, journal.revisionFloor(identity)); assertEquals(1L, journal.revisionFloor(other))
@@ -92,7 +92,7 @@ class RevisionHistoryRecoveryTest {
     @Test fun cancelledForeignReusedAndChangedPreviewsNeverForgetHistory() = trial { dir, protector ->
         WindowsDeltaJournal(dir, protector).use { journal ->
             journal.recordVerifiedRevision(identity, 10)
-            val pc = RecoveryController(journal)
+            val pc = testController(journal)
             val first = pc.prepareForgetRevisionHistory(identity)!!
             val second = pc.prepareForgetRevisionHistory(identity)!!
             trial { foreignDir, foreignProtector ->
@@ -126,16 +126,16 @@ class RevisionHistoryRecoveryTest {
             }
             Files.write(dir.resolve("revision-floors.dpapi"), protector.transform(buffer.toByteArray(), true))
             val original = Files.readAllBytes(dir.resolve("revision-floors.dpapi"))
-            val pc = RecoveryController(journal); pc.observeTransport(true)
+            val pc = testController(journal); pc.observeTransport(true)
             assertEquals(256, pc.revisionHistoryEntries().size)
-            assertFails { pc.acceptGrant(grant(1, "new-instance"), 0) }
+            assertFails { pc.acceptFixtureGrant(grant(1, "new-instance"), 0) }
             assertFalse(pc.canEdit(0)); assertContentEquals(original, Files.readAllBytes(dir.resolve("revision-floors.dpapi")))
             val selected = DatasetIdentity(identity.device, "fake-dataset-0")
             assertEquals(HistoryRecoveryResult.RECOVERED,
                 pc.recoverRevisionHistory(pc.prepareForgetRevisionHistory(selected)!!.confirmation))
             assertNull(journal.revisionFloor(selected)); assertEquals(255, pc.revisionHistoryEntries().size)
-            assertFails { pc.acceptGrant(grant(1, "new-instance"), 0) }
-            pc.acceptFreshHistoryBaseline(grant(1, "new-instance"), 0); pc.suspendSession()
+            assertFails { pc.acceptFixtureGrant(grant(1, "new-instance"), 0) }
+            pc.acceptFixtureBaseline(grant(1, "new-instance"), 0); pc.suspendSession()
             assertEquals(256, pc.revisionHistoryEntries().size)
             assertEquals(7L, journal.revisionFloor(DatasetIdentity(identity.device, "fake-dataset-1")))
         }
@@ -147,10 +147,10 @@ class RevisionHistoryRecoveryTest {
             val failing = object : RevisionHistoryRecoveryJournal by journal {
                 override fun recordVerifiedRevision(identity: DatasetIdentity, revision: Long) { error("Injected save failure") }
             }
-            val pc = RecoveryController(failing); pc.observeTransport(true)
+            val pc = testController(failing); pc.observeTransport(true)
             assertEquals(HistoryRecoveryResult.RECOVERED,
                 pc.recoverRevisionHistory(pc.prepareForgetRevisionHistory(identity)!!.confirmation))
-            assertFails { pc.acceptFreshHistoryBaseline(grant(3), 0) }
+            assertFails { pc.acceptFixtureBaseline(grant(3), 0) }
             assertFalse(pc.canEdit(0)); assertFalse(pc.hasSnapshot)
             assertTrue(journal.historyRecoveryRequired(identity)); assertNull(journal.revisionFloor(identity))
         }
@@ -162,7 +162,7 @@ class RevisionHistoryRecoveryTest {
             val file = dir.resolve("revision-floors.dpapi")
             val oversized = ByteArray(131073) { 42 }
             Files.write(file, oversized)
-            val pc = RecoveryController(journal); val preview = pc.prepareQuarantineRevisionHistory()
+            val pc = testController(journal); val preview = pc.prepareQuarantineRevisionHistory()
             Files.write(file, byteArrayOf(43), StandardOpenOption.APPEND)
             assertEquals(HistoryRecoveryResult.CHANGED, pc.recoverRevisionHistory(preview.confirmation))
             assertTrue(Files.exists(file)); assertFalse(journal.historyIsIncomplete())
@@ -180,7 +180,7 @@ class RevisionHistoryRecoveryTest {
         WindowsDeltaJournal(dir, protector).use { journal ->
             val floorFile = dir.resolve("revision-floors.dpapi"); val damaged = byteArrayOf(9, 8, 7)
             Files.write(floorFile, damaged)
-            val pc = RecoveryController(journal); val preview = pc.prepareQuarantineRevisionHistory()
+            val pc = testController(journal); val preview = pc.prepareQuarantineRevisionHistory()
             Files.createDirectory(obstruction); Files.write(obstruction.resolve("synthetic-obstruction"), byteArrayOf(1))
             try {
                 assertFails { pc.recoverRevisionHistory(preview.confirmation) }

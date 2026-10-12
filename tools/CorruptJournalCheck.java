@@ -24,7 +24,7 @@ class CorruptJournalCheck {
                 long started = now();
                 link.observe(1, new WindowsTransportReader(helper).sample(), started, now());
                 if (link.getState() != TransportState.USB_MTP_READY) throw new IllegalStateException("Transport not ready");
-                pc.acceptGrant(new Grant("fake-monitor-phone", "mock-corruption-session", 1, now() + 60000, "fake-dataset-v1"), now());
+                MockGrantFixture.accept(pc, "fake-monitor-phone", "mock-corruption-session", 1, now() + 60000, "fake-dataset-v1", now());
                 pc.loadSyntheticSnapshot(new byte[]{1,2,3}, now());
                 if (!pc.canEdit(now()) || !pc.getHasSnapshot()) throw new IllegalStateException("Missing initial mock permission");
                 Path damagedFile = disposable.resolve("pending.dpapi");

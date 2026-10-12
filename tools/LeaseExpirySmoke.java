@@ -20,7 +20,7 @@ class LeaseExpirySmoke {
             link.observe(++seq, reader.sample(), started, now());
             if (link.getState() != TransportState.USB_MTP_READY) throw new IllegalStateException("Transport not ready");
             long expires = now() + 15000;
-            pc.acceptGrant(new Grant("fake-monitor-phone", "mock-expiry-session", 1, expires, "fake-dataset-v1"), now());
+            MockGrantFixture.accept(pc, "fake-monitor-phone", "mock-expiry-session", 1, expires, "fake-dataset-v1", now());
             pc.loadSyntheticSnapshot(new byte[]{1,2,3}, now());
             show(link, pc, true);
             boolean expired = false;

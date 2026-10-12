@@ -3,16 +3,23 @@ import java.nio.file.*
 
 /** CLI fixtures only. No real phone/session operation occurs. */
 object RecoverySmoke {
+    // Virtual-time fixture only. New production requests use real elapsed storage time.
+    private fun acceptMock(pc: RecoveryController, device: String, session: String, revision: Long,
+        localDeadline: Long, instance: String, now: Long) {
+        val request = pc.beginGrantRequest(DatasetIdentity(device, instance), now, localDeadline - now, 0)
+        pc.acceptGrant(Grant(device, session, revision, localDeadline - now, instance,
+            request.requestNonce, request.minimumEpoch), request, now)
+    }
     @JvmStatic fun main(args: Array<String>) {
         require(args.size == 3)
         val directory = Path.of(args[1])
         WindowsDeltaJournal(directory, DpapiProtector(Path.of(args[0]))).use { journal ->
-            val controller = RecoveryController(journal)
+            val controller = RecoveryController(journal) { 0 }
             when (args[2]) {
                 "seed" -> {
                     check(journal.load() == null)
                     controller.observeTransport(true)
-                    controller.acceptGrant(Grant("fake-restart-phone", "mock-session-1", 5, 100, "fake-dataset-v1"), 0)
+                    acceptMock(controller, "fake-restart-phone", "mock-session-1", 5, 100, "fake-dataset-v1", 0)
                     controller.loadSyntheticSnapshot(byteArrayOf(1, 2, 3), 0)
                     controller.stage("fake-restart-operation", "SYNTHETIC-RESTART-DELTA", 1)
                     controller.suspendSession()
@@ -31,7 +38,7 @@ object RecoverySmoke {
                         "fake-restart-operation", edit.contentDigest, 6, "fake-dataset-v1")) == ReconciliationResult.CLEARED)
                     check(journal.load() == null)
                     check(!controller.canEdit(101) && !controller.hasSnapshot)
-                    controller.acceptGrant(Grant("fake-restart-phone", "mock-session-2", 6, 200, "fake-dataset-v1"), 101)
+                    acceptMock(controller, "fake-restart-phone", "mock-session-2", 6, 200, "fake-dataset-v1", 101)
                     controller.suspendSession()
                     println("separate-jvm-recovery-verified=true")
                 }
@@ -39,10 +46,16 @@ object RecoverySmoke {
                     check(journal.load() == null && !controller.hasSnapshot && !controller.canEdit(0))
                     controller.observeTransport(true)
                     var rejected = false
-                    try { controller.acceptGrant(Grant("fake-restart-phone", "stale", 5, 100, "fake-dataset-v1"), 0) }
+                    val oldEpochRequest = controller.beginGrantRequest(DatasetIdentity("fake-restart-phone", "fake-dataset-v1"), 0, 100, 0)
+                    check(oldEpochRequest.minimumEpoch >= 2)
+                    try { controller.acceptGrant(Grant("fake-restart-phone", "old-epoch", 6, 100,
+                        "fake-dataset-v1", oldEpochRequest.requestNonce, 0), oldEpochRequest, 0) }
+                    catch (_: IllegalArgumentException) { rejected = true }
+                    check(rejected); rejected = false
+                    try { acceptMock(controller, "fake-restart-phone", "stale", 5, 100, "fake-dataset-v1", 0) }
                     catch (_: IllegalStateException) { rejected = true }
                     check(rejected)
-                    controller.acceptGrant(Grant("fake-restart-phone", "fresh", 6, 100, "fake-dataset-v1"), 0)
+                    acceptMock(controller, "fake-restart-phone", "fresh", 6, 100, "fake-dataset-v1", 0)
                     controller.suspendSession()
                     println("separate-jvm-revision-floor-verified=true")
                 }

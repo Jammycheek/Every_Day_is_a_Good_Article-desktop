@@ -21,17 +21,17 @@ class WindowsDeltaJournalTest {
             journal.save(RecoveryEdit(PendingEdit("fake-phone", 7, "fake-op", "fake-dataset-v1"), "SYNTHETIC-DISCARD"))
             val floorFile = directory.resolve("revision-floors.dpapi")
             val floorBytes = Files.readAllBytes(floorFile)
-            val pc = RecoveryController(journal); pc.observeTransport(true)
-            assertFailsWith<IllegalStateException> { pc.acceptGrant(Grant("fake-phone", "fresh", 8, 100, "fake-dataset-v1"), 0) }
+            val pc = testController(journal); pc.observeTransport(true)
+            assertFailsWith<IllegalStateException> { pc.acceptFixtureGrant(FixtureGrant("fake-phone", "fresh", 8, 100, "fake-dataset-v1"), 0) }
             val preview = pc.preparePendingDiscard()!!
             assertTrue(Files.exists(directory.resolve("pending.dpapi")))
             assertEquals(PendingDiscardResult.DISCARDED, pc.discardPending(preview.confirmation))
             assertFalse(Files.exists(directory.resolve("pending.dpapi")))
             assertContentEquals(floorBytes, Files.readAllBytes(floorFile))
             journal.close()
-            val restarted = RecoveryController(openJournal(directory, protector)); restarted.observeTransport(true)
-            assertFailsWith<IllegalStateException> { restarted.acceptGrant(Grant("fake-phone", "stale", 7, 100, "fake-dataset-v1"), 0) }
-            restarted.acceptGrant(Grant("fake-phone", "fresh", 8, 100, "fake-dataset-v1"), 0)
+            val restarted = testController(openJournal(directory, protector)); restarted.observeTransport(true)
+            assertFailsWith<IllegalStateException> { restarted.acceptFixtureGrant(FixtureGrant("fake-phone", "stale", 7, 100, "fake-dataset-v1"), 0) }
+            restarted.acceptFixtureGrant(FixtureGrant("fake-phone", "fresh", 8, 100, "fake-dataset-v1"), 0)
             assertTrue(restarted.canEdit(0)); assertFalse(restarted.hasSnapshot)
         } finally {
             closeJournals()
@@ -57,9 +57,9 @@ class WindowsDeltaJournalTest {
             val encrypted = Files.readAllBytes(directory.resolve("revision-floors.dpapi"))
             assertFalse(String(encrypted, Charsets.ISO_8859_1).contains("fake-dataset-v1"))
             assertEquals(1, Files.getFileAttributeView(directory.resolve("revision-floors.dpapi"), AclFileAttributeView::class.java).acl.size)
-            val pc = RecoveryController(restartedStore); pc.observeTransport(true)
-            assertFailsWith<IllegalStateException> { pc.acceptGrant(Grant("fake-phone", "stale", 9, 100, "fake-dataset-v1"), 0) }
-            pc.acceptGrant(Grant("fake-phone", "fresh", 10, 100, "fake-dataset-v1"), 0)
+            val pc = testController(restartedStore); pc.observeTransport(true)
+            assertFailsWith<IllegalStateException> { pc.acceptFixtureGrant(FixtureGrant("fake-phone", "stale", 9, 100, "fake-dataset-v1"), 0) }
+            pc.acceptFixtureGrant(FixtureGrant("fake-phone", "fresh", 10, 100, "fake-dataset-v1"), 0)
             assertTrue(pc.canEdit(0)); assertFalse(pc.hasSnapshot)
         } finally {
             closeJournals()
@@ -75,13 +75,13 @@ class WindowsDeltaJournalTest {
             val protector = DpapiProtector(Path.of(helper))
             val journal = openJournal(directory, protector)
             journal.recordVerifiedRevision(DatasetIdentity("fake-phone", "fake-dataset-v1"), 8)
-            val pc = RecoveryController(journal); pc.observeTransport(true)
-            pc.acceptGrant(Grant("fake-phone", "s1", 8, 100, "fake-dataset-v1"), 0)
+            val pc = testController(journal); pc.observeTransport(true)
+            pc.acceptFixtureGrant(FixtureGrant("fake-phone", "s1", 8, 100, "fake-dataset-v1"), 0)
             pc.loadSyntheticSnapshot(byteArrayOf(1), 0)
             val file = directory.resolve("revision-floors.dpapi")
             val damaged = Files.readAllBytes(file); damaged[damaged.lastIndex] = (damaged.last().toInt() xor 0xff).toByte()
             Files.write(file, damaged)
-            assertFails { pc.acceptGrant(Grant("fake-phone", "s2", 9, 100, "fake-dataset-v1"), 1) }
+            assertFails { pc.acceptFixtureGrant(FixtureGrant("fake-phone", "s2", 9, 100, "fake-dataset-v1"), 1) }
             assertFalse(pc.canEdit(1)); assertFalse(pc.hasSnapshot)
             assertContentEquals(damaged, Files.readAllBytes(file))
         } finally {
@@ -104,10 +104,10 @@ class WindowsDeltaJournalTest {
             }
             val encrypted = protector.transform(buffer.toByteArray(), true)
             val file = directory.resolve("pending.dpapi"); Files.write(file, encrypted)
-            val pc = RecoveryController(journal); val legacy = pc.pending!!
+            val pc = testController(journal); val legacy = pc.pending!!
             assertNull(legacy.metadata.datasetInstance); assertEquals("SYNTHETIC-LEGACY", legacy.syntheticDelta)
             pc.observeTransport(true)
-            assertFailsWith<IllegalStateException> { pc.acceptGrant(Grant("fake-phone", "s1", 7, 100, "fake-dataset-v1"), 0) }
+            assertFailsWith<IllegalStateException> { pc.acceptFixtureGrant(FixtureGrant("fake-phone", "s1", 7, 100, "fake-dataset-v1"), 0) }
             assertEquals(ReconciliationResult.NOT_THIS_OPERATION,
                 pc.reconcileApplied(AppliedReceipt("fake-phone", 7, "fake-op", legacy.contentDigest, 8, "fake-dataset-v1")))
             assertContentEquals(encrypted, Files.readAllBytes(file))
@@ -118,7 +118,7 @@ class WindowsDeltaJournalTest {
             assertContentEquals(encrypted, Files.readAllBytes(file))
             assertEquals(PendingDiscardResult.DISCARDED, pc.discardPending(pc.preparePendingDiscard()!!.confirmation))
             assertFalse(Files.exists(file)); assertFalse(pc.canEdit(0))
-            pc.acceptGrant(Grant("fake-phone", "new", 8, 100, "fake-dataset-v1"), 0)
+            pc.acceptFixtureGrant(FixtureGrant("fake-phone", "new", 8, 100, "fake-dataset-v1"), 0)
             assertTrue(pc.canEdit(0)); assertFalse(pc.hasSnapshot)
         } finally {
             closeJournals()
@@ -132,8 +132,8 @@ class WindowsDeltaJournalTest {
         val directory = Files.createTempDirectory("ea-poc-malformed-test")
         try {
             val protector = DpapiProtector(Path.of(helper))
-            val pc = RecoveryController(openJournal(directory, protector))
-            pc.observeTransport(true); pc.acceptGrant(Grant("fake-phone", "s1", 7, 100, "fake-dataset-v1"), 0)
+            val pc = testController(openJournal(directory, protector))
+            pc.observeTransport(true); pc.acceptFixtureGrant(FixtureGrant("fake-phone", "s1", 7, 100, "fake-dataset-v1"), 0)
             pc.loadSyntheticSnapshot(byteArrayOf(1), 0)
             val buffer = ByteArrayOutputStream()
             DataOutputStream(buffer).use {
@@ -160,8 +160,8 @@ class WindowsDeltaJournalTest {
         try {
             val protector = DpapiProtector(Path.of(helper))
             val journal = openJournal(directory, protector)
-            val pc = RecoveryController(journal)
-            pc.observeTransport(true); pc.acceptGrant(Grant("fake-phone", "s1", 7, 100, "fake-dataset-v1"), 0)
+            val pc = testController(journal)
+            pc.observeTransport(true); pc.acceptFixtureGrant(FixtureGrant("fake-phone", "s1", 7, 100, "fake-dataset-v1"), 0)
             pc.loadSyntheticSnapshot(byteArrayOf(42), 0)
             pc.stage("fake-op", "SYNTHETIC-SECRET-DELTA", 1); pc.observeTransport(false)
             assertFalse(pc.hasSnapshot)
@@ -171,7 +171,7 @@ class WindowsDeltaJournalTest {
             assertEquals(1, entries.size)
             journal.close()
             val restartedStore = openJournal(directory, protector)
-            val restarted = RecoveryController(restartedStore)
+            val restarted = testController(restartedStore)
             assertFalse(restarted.hasSnapshot); assertFalse(restarted.canEdit(2))
             assertEquals("SYNTHETIC-SECRET-DELTA", restarted.recoveryCandidate("fake-phone", 7, "fake-dataset-v1")?.syntheticDelta)
             assertFailsWith<IllegalStateException> { restarted.recoveryCandidate("different", 7, "fake-dataset-v1") }
@@ -180,7 +180,7 @@ class WindowsDeltaJournalTest {
                 restarted.reconcileApplied(AppliedReceipt("fake-phone", 7, "fake-op", edit.contentDigest, 8, "fake-dataset-v1")))
             assertFalse(Files.exists(directory.resolve("pending.dpapi")))
             assertFalse(restarted.canEdit(102)); assertFalse(restarted.hasSnapshot)
-            restarted.observeTransport(true); restarted.acceptGrant(Grant("fake-phone", "s2", 8, 200, "fake-dataset-v1"), 103)
+            restarted.observeTransport(true); restarted.acceptFixtureGrant(FixtureGrant("fake-phone", "s2", 8, 200, "fake-dataset-v1"), 103)
             restarted.suspendSession()
             restartedStore.save(RecoveryEdit(PendingEdit("fake-phone", 7, "fake-op", "fake-dataset-v1"), "SYNTHETIC-SECRET-DELTA"))
             val damaged = Files.readAllBytes(directory.resolve("pending.dpapi"))
