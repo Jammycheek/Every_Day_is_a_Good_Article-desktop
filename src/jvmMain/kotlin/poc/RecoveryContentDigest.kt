@@ -8,6 +8,7 @@ import java.security.MessageDigest
 internal actual fun recoveryContentDigest(metadata: PendingEdit, syntheticDelta: String): String {
     requireWellFormedUtf16(metadata.device)
     requireWellFormedUtf16(metadata.operation)
+    metadata.datasetInstance?.let { DatasetIdentity(metadata.device, it) }
     requireWellFormedUtf16(syntheticDelta)
     val buffer = ByteArrayOutputStream()
     DataOutputStream(buffer).use { output ->
@@ -15,8 +16,9 @@ internal actual fun recoveryContentDigest(metadata: PendingEdit, syntheticDelta:
             val bytes = value.toByteArray(Charsets.UTF_8)
             try { output.writeInt(bytes.size); output.write(bytes) } finally { bytes.fill(0) }
         }
-        field("EveryArticle-Synthetic-Receipt-v1")
+        field(if (metadata.datasetInstance == null) "EveryArticle-Synthetic-Receipt-v1" else "EveryArticle-Synthetic-Receipt-v2")
         field(metadata.device)
+        metadata.datasetInstance?.let { field(it) }
         output.writeLong(metadata.baseRevision)
         field(metadata.operation)
         field(syntheticDelta)

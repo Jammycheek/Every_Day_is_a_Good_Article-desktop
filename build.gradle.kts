@@ -24,8 +24,9 @@ fun registerRecoveryFixture(name: String, mode: String) = tasks.register<JavaExe
         layout.buildDirectory.dir("recovery-restart-smoke").get().asFile.absolutePath, mode)
 }
 val recoverySeed = registerRecoveryFixture("seedRecoverySmoke", "seed")
-val recoveryRead = registerRecoveryFixture("runRecoveryRestartSmoke", "recover")
+val recoveryRead = registerRecoveryFixture("reconcileRecoverySmoke", "recover")
 recoveryRead.configure { dependsOn(recoverySeed) }
+registerRecoveryFixture("runRecoveryRestartSmoke", "verify-floor").configure { dependsOn(recoveryRead) }
 
 tasks.register<Jar>("pocCliJar") {
     dependsOn("jvmMainClasses")

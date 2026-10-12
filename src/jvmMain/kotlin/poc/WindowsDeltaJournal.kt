@@ -44,6 +44,7 @@ class DpapiProtector(private val helper: Path) {
 /** One synthetic operation, one local writer. Not a production storage/retention policy. */
 class WindowsDeltaJournal(private val directory: Path, private val protector: DpapiProtector) : DeltaJournal {
     private val file = directory.resolve("pending.dpapi")
+    private val floorFile = directory.resolve("revision-floors.dpapi")
     init {
         Files.createDirectories(directory)
         check(!Files.isSymbolicLink(directory))
@@ -62,24 +63,68 @@ class WindowsDeltaJournal(private val directory: Path, private val protector: Dp
         val plain = protector.transform(Files.readAllBytes(file), false)
         try {
             DataInputStream(ByteArrayInputStream(plain)).use {
-                check(it.readInt() == 0x45415031) { "Unsupported recovery version" }
-                val device = it.readUTF(); val revision = it.readLong(); val operation = it.readUTF(); val delta = it.readUTF()
+                val version = it.readInt()
+                check(version == 0x45415031 || version == 0x45415032) { "Unsupported recovery version" }
+                val device = it.readUTF()
+                val instance = if (version == 0x45415032) it.readUTF() else null
+                val revision = it.readLong(); val operation = it.readUTF(); val delta = it.readUTF()
                 check(it.read() == -1 && revision >= 0 && device.isNotBlank() && operation.isNotBlank() && delta.isNotEmpty())
-                return RecoveryEdit(PendingEdit(device, revision, operation), delta)
+                return RecoveryEdit(PendingEdit(device, revision, operation, instance), delta)
             }
         } finally { plain.fill(0) }
     }
     override fun save(edit: RecoveryEdit) {
         check(load() == null) { "Pending operation already exists" }
-        val fields = listOf(edit.metadata.device, edit.metadata.operation, edit.syntheticDelta)
+        val instance = requireNotNull(edit.metadata.datasetInstance) { "Legacy identity requires explicit resolution" }
+        val fields = listOf(edit.metadata.device, instance, edit.metadata.operation, edit.syntheticDelta)
         require(fields.all { it.isNotBlank() && it.toByteArray(Charsets.UTF_8).size <= 4096 })
         require(edit.metadata.baseRevision >= 0)
         val buffer = ByteArrayOutputStream()
         DataOutputStream(buffer).use {
-            it.writeInt(0x45415031); it.writeUTF(edit.metadata.device); it.writeLong(edit.metadata.baseRevision)
+            it.writeInt(0x45415032); it.writeUTF(edit.metadata.device); it.writeUTF(instance); it.writeLong(edit.metadata.baseRevision)
             it.writeUTF(edit.metadata.operation); it.writeUTF(edit.syntheticDelta)
         }
-        val plain = buffer.toByteArray()
+        writeProtected(file, buffer.toByteArray())
+    }
+    override fun revisionFloor(identity: DatasetIdentity): Long? = readFloors()[identity]
+    override fun recordAppliedRevision(identity: DatasetIdentity, revision: Long) {
+        require(revision >= 0)
+        val floors = readFloors().toMutableMap()
+        val previous = floors[identity]
+        if (previous != null && previous >= revision) return
+        floors[identity] = revision
+        require(floors.size <= 256) { "Revision floor capacity exceeded" }
+        val buffer = ByteArrayOutputStream()
+        DataOutputStream(buffer).use { output ->
+            output.writeInt(0x45414631); output.writeInt(floors.size)
+            floors.entries.sortedWith(compareBy({ it.key.device }, { it.key.incarnation })).forEach { (key, value) ->
+                require(listOf(key.device, key.incarnation).all { it.toByteArray(Charsets.UTF_8).size <= 4096 })
+                output.writeUTF(key.device); output.writeUTF(key.incarnation); output.writeLong(value)
+            }
+        }
+        writeProtected(floorFile, buffer.toByteArray())
+    }
+    private fun readFloors(): Map<DatasetIdentity, Long> {
+        if (!Files.exists(floorFile, LinkOption.NOFOLLOW_LINKS)) return emptyMap()
+        check(Files.isRegularFile(floorFile, LinkOption.NOFOLLOW_LINKS) && Files.size(floorFile) <= 131072)
+        val plain = protector.transform(Files.readAllBytes(floorFile), false)
+        try {
+            DataInputStream(ByteArrayInputStream(plain)).use { input ->
+                check(input.readInt() == 0x45414631) { "Unsupported revision floor version" }
+                val count = input.readInt(); check(count in 0..256)
+                val floors = mutableMapOf<DatasetIdentity, Long>()
+                repeat(count) {
+                    val identity = DatasetIdentity(input.readUTF(), input.readUTF())
+                    val revision = input.readLong(); check(revision >= 0)
+                    check(listOf(identity.device, identity.incarnation).all { it.toByteArray(Charsets.UTF_8).size <= 4096 })
+                    check(floors.put(identity, revision) == null) { "Duplicate revision floor identity" }
+                }
+                check(input.read() == -1)
+                return floors
+            }
+        } finally { plain.fill(0) }
+    }
+    private fun writeProtected(target: Path, plain: ByteArray) {
         val encrypted = try { protector.transform(plain, true) } finally { plain.fill(0) }
         val temporary = Files.createTempFile(directory, "pending-", ".tmp")
         try {
@@ -89,7 +134,7 @@ class WindowsDeltaJournal(private val directory: Path, private val protector: Dp
                 while (bytes.hasRemaining()) channel.write(bytes)
                 channel.force(true)
             }
-            Files.move(temporary, file, StandardCopyOption.ATOMIC_MOVE)
+            Files.move(temporary, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
         } finally {
             encrypted.fill(0)
             Files.deleteIfExists(temporary)

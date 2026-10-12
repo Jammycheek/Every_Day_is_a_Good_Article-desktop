@@ -13,7 +13,7 @@ class CorruptJournalCheck {
         byte[] originalBytes = Files.readAllBytes(original);
         Path disposable = Files.createTempDirectory(copiesRoot, "corrupt-journal-");
         WindowsDeltaJournal journal = new WindowsDeltaJournal(disposable, new DpapiProtector(helper));
-        RecoveryEdit expected = new RecoveryEdit(new PendingEdit("fake-monitor-phone", 1, "fake-monitor-op"), "SYNTHETIC-MONITOR-DELTA");
+        RecoveryEdit expected = new RecoveryEdit(new PendingEdit("fake-monitor-phone", 1, "fake-monitor-op", "fake-dataset-v1"), "SYNTHETIC-MONITOR-DELTA");
         RecoveryEdit source = new WindowsDeltaJournal(Path.of(args[1]), new DpapiProtector(helper)).load();
         if (!expected.equals(source)) throw new IllegalStateException("Source must be the synthetic fixture");
         journal.save(source); // New encrypted copy with the journal's owner-only ACL.
@@ -23,7 +23,7 @@ class CorruptJournalCheck {
             long started = now();
             link.observe(1, new WindowsTransportReader(helper).sample(), started, now());
             if (link.getState() != TransportState.USB_MTP_READY) throw new IllegalStateException("Transport not ready");
-            pc.acceptGrant(new Grant("fake-monitor-phone", "mock-corruption-session", 1, now() + 60000), now());
+            pc.acceptGrant(new Grant("fake-monitor-phone", "mock-corruption-session", 1, now() + 60000, "fake-dataset-v1"), now());
             pc.loadSyntheticSnapshot(new byte[]{1,2,3}, now());
             if (!pc.canEdit(now()) || !pc.getHasSnapshot()) throw new IllegalStateException("Missing initial mock permission");
             Path damagedFile = disposable.resolve("pending.dpapi");

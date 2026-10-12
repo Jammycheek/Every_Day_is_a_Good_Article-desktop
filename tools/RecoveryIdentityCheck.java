@@ -13,21 +13,21 @@ class RecoveryIdentityCheck {
         Path helper = Path.of(args[0]), directory = Path.of(args[1]);
         byte[] before = Files.readAllBytes(directory.resolve("pending.dpapi"));
         RecoveryController pc = new RecoveryController(new WindowsDeltaJournal(directory, new DpapiProtector(helper)));
-        RecoveryEdit expected = new RecoveryEdit(new PendingEdit("fake-monitor-phone", 1, "fake-monitor-op"), "SYNTHETIC-MONITOR-DELTA");
+        RecoveryEdit expected = new RecoveryEdit(new PendingEdit("fake-monitor-phone", 1, "fake-monitor-op", "fake-dataset-v1"), "SYNTHETIC-MONITOR-DELTA");
         if (!expected.equals(pc.getPending())) throw new IllegalStateException("Requires known synthetic journal");
         TransportCoordinator link = new TransportCoordinator(pc, 3000);
         try {
             long started = now();
             link.observe(1, new WindowsTransportReader(helper).sample(), started, now());
             if (link.getState() != TransportState.USB_MTP_READY) throw new IllegalStateException("Transport not ready");
-            rejected(() -> pc.recoveryCandidate("different-fake-phone", 1));
-            rejected(() -> pc.recoveryCandidate("fake-monitor-phone", 2));
-            rejected(() -> pc.acceptGrant(new Grant("different-fake-phone", "mock-mismatch", 1, now()+60000), now()));
-            rejected(() -> pc.acceptGrant(new Grant("fake-monitor-phone", "mock-mismatch", 2, now()+60000), now()));
+            rejected(() -> pc.recoveryCandidate("different-fake-phone", 1, "fake-dataset-v1"));
+            rejected(() -> pc.recoveryCandidate("fake-monitor-phone", 2, "fake-dataset-v1"));
+            rejected(() -> pc.acceptGrant(new Grant("different-fake-phone", "mock-mismatch", 1, now()+60000, "fake-dataset-v1"), now()));
+            rejected(() -> pc.acceptGrant(new Grant("fake-monitor-phone", "mock-mismatch", 2, now()+60000, "fake-dataset-v1"), now()));
             if (pc.canEdit(now()) || pc.getHasSnapshot()) throw new IllegalStateException("Mismatch enabled editing");
             System.out.println("wrong-device-rejected=true;wrong-revision-rejected=true;mock-can-edit=false;snapshot=false");
-            pc.acceptGrant(new Grant("fake-monitor-phone", "mock-matching", 1, now()+60000), now());
-            if (!pc.canEdit(now()) || pc.getHasSnapshot() || !expected.equals(pc.recoveryCandidate("fake-monitor-phone",1)))
+            pc.acceptGrant(new Grant("fake-monitor-phone", "mock-matching", 1, now()+60000, "fake-dataset-v1"), now());
+            if (!pc.canEdit(now()) || pc.getHasSnapshot() || !expected.equals(pc.recoveryCandidate("fake-monitor-phone",1, "fake-dataset-v1")))
                 throw new IllegalStateException("Explicit matching mock grant failed");
             System.out.println("explicit-matching-mock-grant-accepted=true;snapshot=false;pending=true");
             link.stop();

@@ -4,7 +4,7 @@ import kotlin.test.*
 class SessionGateTest {
     private fun ready(): SessionGate = SessionGate().apply {
         observeTransport(true)
-        acceptGrant(Grant("fake-device", "s1", 3, 100), 0)
+        acceptGrant(Grant("fake-device", "s1", 3, 100, "fake-dataset-v1"), 0)
         loadSnapshot(0)
     }
 
@@ -36,9 +36,9 @@ class SessionGateTest {
         gate.stage("fake-op", 1)
         gate.observeTransport(false)
         gate.observeTransport(true)
-        assertFailsWith<IllegalStateException> { gate.acceptGrant(Grant("other", "s2", 3, 200), 101) }
-        assertFailsWith<IllegalStateException> { gate.acceptGrant(Grant("fake-device", "s2", 4, 200), 101) }
-        gate.acceptGrant(Grant("fake-device", "s2", 3, 200), 101)
+        assertFailsWith<IllegalStateException> { gate.acceptGrant(Grant("other", "s2", 3, 200, "fake-dataset-v1"), 101) }
+        assertFailsWith<IllegalStateException> { gate.acceptGrant(Grant("fake-device", "s2", 4, 200, "fake-dataset-v1"), 101) }
+        gate.acceptGrant(Grant("fake-device", "s2", 3, 200, "fake-dataset-v1"), 101)
         assertNotNull(gate.pending)
     }
     @Test fun transferOrStaleAcknowledgementDoesNotClearDelta() {
@@ -54,8 +54,8 @@ class SessionGateTest {
     @Test fun expiredGrantAndReplacementAreRejected() {
         val gate = SessionGate()
         gate.observeTransport(true)
-        assertFailsWith<IllegalArgumentException> { gate.acceptGrant(Grant("d", "s", 0, 1), 1) }
-        gate.acceptGrant(Grant("d", "s", 0, 10), 1)
-        assertFailsWith<IllegalStateException> { gate.acceptGrant(Grant("d", "new", 0, 20), 2) }
+        assertFailsWith<IllegalArgumentException> { gate.acceptGrant(Grant("d", "s", 0, 1, "fake-dataset-v1"), 1) }
+        gate.acceptGrant(Grant("d", "s", 0, 10, "fake-dataset-v1"), 1)
+        assertFailsWith<IllegalStateException> { gate.acceptGrant(Grant("d", "new", 0, 20, "fake-dataset-v1"), 2) }
     }
 }

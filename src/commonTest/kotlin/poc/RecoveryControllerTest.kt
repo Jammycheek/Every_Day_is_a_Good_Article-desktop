@@ -7,13 +7,20 @@ class RecoveryControllerTest {
         var failRead = false
         var failSave = false
         var failClear = false
+        var failFloorRead = false
+        var failFloorSave = false
+        val floors = mutableMapOf<DatasetIdentity, Long>()
         override fun load(): RecoveryEdit? { check(!failRead); return edit }
         override fun save(edit: RecoveryEdit) { check(!failSave); this.edit = edit }
         override fun clear() { check(!failClear); edit = null }
+        override fun revisionFloor(identity: DatasetIdentity): Long? { check(!failFloorRead); return floors[identity] }
+        override fun recordAppliedRevision(identity: DatasetIdentity, revision: Long) {
+            check(!failFloorSave); floors[identity] = maxOf(floors[identity] ?: 0, revision)
+        }
     }
     private fun ready(journal: Journal) = RecoveryController(journal).apply {
         observeTransport(true)
-        acceptGrant(Grant("fake-phone", "s1", 7, 100), 0)
+        acceptGrant(Grant("fake-phone", "s1", 7, 100, "fake-dataset-v1"), 0)
         loadSyntheticSnapshot(byteArrayOf(1, 2, 3), 0)
     }
     @Test fun unreadableJournalStopsEditingWithoutDiscardingRecord() {
@@ -43,9 +50,9 @@ class RecoveryControllerTest {
         val journal = Journal(); ready(journal).stage("op1", "synthetic-change", 1)
         val restarted = RecoveryController(journal)
         assertFalse(restarted.hasSnapshot); assertFalse(restarted.canEdit(2))
-        assertNotNull(restarted.recoveryCandidate("fake-phone", 7))
-        assertFailsWith<IllegalStateException> { restarted.recoveryCandidate("other-phone", 7) }
-        assertFailsWith<IllegalStateException> { restarted.recoveryCandidate("fake-phone", 8) }
+        assertNotNull(restarted.recoveryCandidate("fake-phone", 7, "fake-dataset-v1"))
+        assertFailsWith<IllegalStateException> { restarted.recoveryCandidate("other-phone", 7, "fake-dataset-v1") }
+        assertFailsWith<IllegalStateException> { restarted.recoveryCandidate("fake-phone", 8, "fake-dataset-v1") }
     }
     @Test fun leaseExpiryReleasesSnapshotAndRetainsDelta() {
         val journal = Journal(); val pc = ready(journal)
@@ -59,7 +66,7 @@ class RecoveryControllerTest {
     }
     private fun receipt(edit: RecoveryEdit, resultingRevision: Long = edit.metadata.baseRevision + 1) =
         AppliedReceipt(edit.metadata.device, edit.metadata.baseRevision, edit.metadata.operation,
-            edit.contentDigest, resultingRevision)
+            edit.contentDigest, resultingRevision, edit.metadata.datasetInstance!!)
 
     @Test fun mismatchedReceiptAndClearFailurePreservePending() {
         val journal = Journal(); val pc = ready(journal); pc.stage("op1", "synthetic-change", 1)
@@ -81,14 +88,14 @@ class RecoveryControllerTest {
         val journal = Journal(); val pc = ready(journal); pc.stage("op1", "synthetic-change", 1)
         val applied = receipt(pc.pending!!, 8) // phone has already committed revision 7 -> 8
         pc.tick(100)
-        assertFailsWith<IllegalStateException> { pc.acceptGrant(Grant("fake-phone", "s2", 8, 200), 101) }
+        assertFailsWith<IllegalStateException> { pc.acceptGrant(Grant("fake-phone", "s2", 8, 200, "fake-dataset-v1"), 101) }
         assertNotNull(pc.pending) // reproduce the old dead end until the applied outcome is queried
         pc.observeTransport(false)
         assertEquals(ReconciliationResult.CLEARED, pc.reconcileApplied(applied)) // no MTP or lease required
         assertNull(pc.pending); assertFalse(pc.canEdit(101)); assertFalse(pc.hasSnapshot)
         pc.observeTransport(true)
         assertFalse(pc.canEdit(102))
-        pc.acceptGrant(Grant("fake-phone", "s2", 8, 200), 102)
+        pc.acceptGrant(Grant("fake-phone", "s2", 8, 200, "fake-dataset-v1"), 102)
         assertTrue(pc.canEdit(103)); assertFalse(pc.hasSnapshot)
     }
 
@@ -111,7 +118,7 @@ class RecoveryControllerTest {
         val journal = Journal(); val pc = ready(journal); pc.stage("op1", "first-payload", 1)
         val oldReceipt = receipt(pc.pending!!)
         pc.suspendSession()
-        journal.edit = RecoveryEdit(PendingEdit("fake-phone", 7, "op1"), "different-payload")
+        journal.edit = RecoveryEdit(PendingEdit("fake-phone", 7, "op1", "fake-dataset-v1"), "different-payload")
         assertEquals(ReconciliationResult.CONFLICT, pc.reconcileApplied(oldReceipt))
         assertEquals("different-payload", pc.pending!!.syntheticDelta)
     }
@@ -121,7 +128,7 @@ class RecoveryControllerTest {
         val applied = receipt(pc.pending!!)
         pc.reconcileApplied(applied)
         assertEquals(ReconciliationResult.NO_PENDING, pc.reconcileApplied(applied))
-        pc.acceptGrant(Grant("fake-phone", "s2", 8, 200), 2)
+        pc.acceptGrant(Grant("fake-phone", "s2", 8, 200, "fake-dataset-v1"), 2)
         pc.loadSyntheticSnapshot(byteArrayOf(9), 2); pc.stage("op2", "new-change", 3)
         assertEquals(ReconciliationResult.NOT_THIS_OPERATION, pc.reconcileApplied(applied))
         assertEquals("op2", pc.pending!!.metadata.operation); assertTrue(pc.canEdit(4)); assertTrue(pc.hasSnapshot)
@@ -137,21 +144,21 @@ class RecoveryControllerTest {
     }
 
     @Test fun digestBindsIdentityRevisionOperationAndUnambiguousPayload() {
-        val original = RecoveryEdit(PendingEdit("fake-phone", 7, "op1"), "合成-data")
+        val original = RecoveryEdit(PendingEdit("fake-phone", 7, "op1", "fake-dataset-v1"), "合成-data")
         assertEquals(64, original.contentDigest.length)
         assertEquals(original.contentDigest, original.copy().contentDigest)
         assertNotEquals(original.contentDigest, original.copy(metadata = original.metadata.copy(device = "other")).contentDigest)
         assertNotEquals(original.contentDigest, original.copy(metadata = original.metadata.copy(baseRevision = 8)).contentDigest)
         assertNotEquals(original.contentDigest, original.copy(metadata = original.metadata.copy(operation = "op2")).contentDigest)
         assertNotEquals(original.contentDigest, original.copy(syntheticDelta = "different").contentDigest)
-        val a = RecoveryEdit(PendingEdit("fake-phone", 7, "ab"), "c")
-        val b = RecoveryEdit(PendingEdit("fake-phone", 7, "a"), "bc")
+        val a = RecoveryEdit(PendingEdit("fake-phone", 7, "ab", "fake-dataset-v1"), "c")
+        val b = RecoveryEdit(PendingEdit("fake-phone", 7, "a", "fake-dataset-v1"), "bc")
         assertNotEquals(a.contentDigest, b.contentDigest)
     }
 
     @Test fun duplicateReceiptWithNoPendingDoesNotInterruptUnsavedSnapshot() {
         val journal = Journal(); val pc = ready(journal)
-        val old = receipt(RecoveryEdit(PendingEdit("fake-phone", 6, "old-op"), "old-change"))
+        val old = receipt(RecoveryEdit(PendingEdit("fake-phone", 6, "old-op", "fake-dataset-v1"), "old-change"))
         assertEquals(ReconciliationResult.NO_PENDING, pc.reconcileApplied(old))
         assertTrue(pc.canEdit(2)); assertTrue(pc.hasSnapshot); assertNull(pc.pending)
         pc.stage("new-op", "new-change", 3) // current session continues normally
@@ -175,14 +182,84 @@ class RecoveryControllerTest {
     @Test fun malformedSurrogatesAreRejectedInAllPersistedStringFields() {
         val bad = listOf("\uD800", "\uDBFF", "\uDC00", "\uDFFF", "a\uD800b", "\uD800\uD800", "\uDC00\uD800")
         for (value in bad) {
-            assertFailsWith<IllegalArgumentException> { RecoveryEdit(PendingEdit(value, 7, "op"), "change") }
-            assertFailsWith<IllegalArgumentException> { RecoveryEdit(PendingEdit("phone", 7, value), "change") }
-            assertFailsWith<IllegalArgumentException> { RecoveryEdit(PendingEdit("phone", 7, "op"), value) }
-            assertFailsWith<IllegalArgumentException> { recoveryContentDigest(PendingEdit("phone", 7, "op"), value) }
+            assertFailsWith<IllegalArgumentException> { RecoveryEdit(PendingEdit(value, 7, "op", "fake-dataset-v1"), "change") }
+            assertFailsWith<IllegalArgumentException> { RecoveryEdit(PendingEdit("phone", 7, value, "fake-dataset-v1"), "change") }
+            assertFailsWith<IllegalArgumentException> { RecoveryEdit(PendingEdit("phone", 7, "op", "fake-dataset-v1"), value) }
+            assertFailsWith<IllegalArgumentException> { recoveryContentDigest(PendingEdit("phone", 7, "op", "fake-dataset-v1"), value) }
         }
-        val valid = RecoveryEdit(PendingEdit("phone", 7, "op"), "合成\uD83D\uDE00\u0000")
+        val valid = RecoveryEdit(PendingEdit("phone", 7, "op", "fake-dataset-v1"), "合成\uD83D\uDE00\u0000")
         assertEquals(64, valid.contentDigest.length)
         assertNotEquals(valid.contentDigest, valid.copy(syntheticDelta = "合成?\u0000").contentDigest)
+    }
+
+    @Test fun verifiedRevisionSurvivesControllerRestartAndRejectsOlderGrants() {
+        val journal = Journal(); val pc = ready(journal); pc.stage("op1", "change", 1)
+        assertEquals(ReconciliationResult.CLEARED, pc.reconcileApplied(receipt(pc.pending!!, 8)))
+        val restarted = RecoveryController(journal); restarted.observeTransport(true)
+        assertFailsWith<IllegalStateException> { restarted.acceptGrant(Grant("fake-phone", "stale", 7, 200, "fake-dataset-v1"), 2) }
+        assertFalse(restarted.canEdit(2)); assertFalse(restarted.hasSnapshot); assertNull(restarted.pending)
+        restarted.acceptGrant(Grant("fake-phone", "fresh", 8, 200, "fake-dataset-v1"), 3)
+        assertTrue(restarted.canEdit(3)); assertFalse(restarted.hasSnapshot)
+    }
+
+    @Test fun revisionFloorsAreScopedByApplicationAndDatasetIncarnation() {
+        val journal = Journal(); val pc = ready(journal); pc.stage("op1", "change", 1)
+        pc.reconcileApplied(receipt(pc.pending!!, 8))
+        pc.acceptGrant(Grant("fake-phone", "new-dataset", 0, 200, "fake-dataset-v2"), 2)
+        pc.loadSyntheticSnapshot(byteArrayOf(1), 2); pc.stage("op2", "new", 3)
+        pc.reconcileApplied(receipt(pc.pending!!, 1))
+        assertEquals(8L, journal.floors[DatasetIdentity("fake-phone", "fake-dataset-v1")])
+        assertEquals(1L, journal.floors[DatasetIdentity("fake-phone", "fake-dataset-v2")])
+        pc.acceptGrant(Grant("other-phone", "other", 0, 200, "fake-dataset-v1"), 4)
+        assertTrue(pc.canEdit(4)) // same incarnation string on another app identity is a different key
+    }
+
+    @Test fun otherIncarnationReceiptCannotClearOrInterruptCurrentOperation() {
+        val journal = Journal(); val pc = ready(journal); pc.stage("op1", "change", 1)
+        val saved = pc.pending!!
+        assertEquals(ReconciliationResult.NOT_THIS_OPERATION,
+            pc.reconcileApplied(receipt(saved).copy(datasetInstance = "fake-dataset-v2")))
+        assertEquals(saved, pc.pending); assertTrue(pc.canEdit(2)); assertTrue(pc.hasSnapshot)
+        assertTrue(journal.floors.isEmpty())
+        assertNotEquals(saved.contentDigest, saved.copy(metadata = saved.metadata.copy(datasetInstance = "fake-dataset-v2")).contentDigest)
+    }
+
+    @Test fun floorWriteFailurePreservesPendingAndStopsEditing() {
+        val journal = Journal(); val pc = ready(journal); pc.stage("op1", "change", 1)
+        val saved = pc.pending!!; journal.failFloorSave = true
+        assertFailsWith<IllegalStateException> { pc.reconcileApplied(receipt(saved)) }
+        assertEquals(saved, pc.pending); assertFalse(pc.canEdit(2)); assertFalse(pc.hasSnapshot)
+        assertTrue(journal.floors.isEmpty())
+    }
+
+    @Test fun floorReadFailureBlocksGrantAndSuspendsExistingSnapshot() {
+        val journal = Journal(); val pc = ready(journal); journal.failFloorRead = true
+        assertFailsWith<IllegalStateException> { pc.acceptGrant(Grant("fake-phone", "s2", 8, 200, "fake-dataset-v1"), 2) }
+        assertFalse(pc.canEdit(2)); assertFalse(pc.hasSnapshot)
+    }
+
+    @Test fun floorIsSavedBeforeClearAndNeverDecreasedByOlderAppliedOutcome() {
+        val journal = Journal(); val pc = ready(journal); pc.stage("op1", "change", 1)
+        val applied = receipt(pc.pending!!, 8); journal.failClear = true
+        assertFailsWith<IllegalStateException> { pc.reconcileApplied(applied) }
+        val identity = DatasetIdentity("fake-phone", "fake-dataset-v1")
+        assertEquals(8L, journal.floors[identity]); assertNotNull(pc.pending)
+        journal.floors[identity] = 10; journal.failClear = false
+        assertEquals(ReconciliationResult.CLEARED, pc.reconcileApplied(applied))
+        assertEquals(10L, journal.floors[identity])
+        assertFailsWith<IllegalStateException> { pc.acceptGrant(Grant("fake-phone", "stale", 8, 200, "fake-dataset-v1"), 2) }
+    }
+
+    @Test fun legacyUnboundPendingIsPreservedWithoutGuessingIncarnation() {
+        val journal = Journal()
+        val legacy = RecoveryEdit(PendingEdit("fake-phone", 7, "op1"), "legacy-change")
+        journal.edit = legacy
+        val pc = RecoveryController(journal); pc.observeTransport(true)
+        assertFailsWith<IllegalStateException> { pc.acceptGrant(Grant("fake-phone", "s1", 7, 100, "fake-dataset-v1"), 0) }
+        assertEquals(ReconciliationResult.NOT_THIS_OPERATION,
+            pc.reconcileApplied(AppliedReceipt("fake-phone", 7, "op1", legacy.contentDigest, 8, "fake-dataset-v1")))
+        assertEquals(legacy, pc.pending); assertNull(pc.pending!!.metadata.datasetInstance)
+        assertTrue(journal.floors.isEmpty()); assertFalse(pc.canEdit(0))
     }
 
     @Test fun malformedStageNeverPersistsReplacementContent() {

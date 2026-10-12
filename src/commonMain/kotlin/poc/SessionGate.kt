@@ -1,8 +1,17 @@
 package poc
 
 /** Synthetic PoC only: callers must authenticate grants outside this state machine. */
-data class Grant(val device: String, val session: String, val baseRevision: Long, val expiresAt: Long)
-data class PendingEdit(val device: String, val baseRevision: Long, val operation: String)
+data class DatasetIdentity(val device: String, val incarnation: String) {
+    init {
+        require(device.isNotBlank() && incarnation.isNotBlank())
+        requireWellFormedUtf16(device); requireWellFormedUtf16(incarnation)
+    }
+}
+data class Grant(val device: String, val session: String, val baseRevision: Long, val expiresAt: Long,
+    val datasetInstance: String)
+/** Null incarnation means a preserved legacy record, never an inferred dataset identity. */
+data class PendingEdit(val device: String, val baseRevision: Long, val operation: String,
+    val datasetInstance: String? = null)
 
 /** A transport observation NEVER creates or renews an editing grant. */
 class SessionGate {
@@ -23,8 +32,10 @@ class SessionGate {
     fun acceptGrant(value: Grant, now: Long) {
         require(transportAvailable && value.expiresAt > now)
         require(value.device.isNotBlank() && value.session.isNotBlank() && value.baseRevision >= 0)
+        DatasetIdentity(value.device, value.datasetInstance)
         check(grant == null)
-        check(pending == null || (pending!!.device == value.device && pending!!.baseRevision == value.baseRevision))
+        check(pending == null || (pending!!.device == value.device && pending!!.baseRevision == value.baseRevision &&
+            pending!!.datasetInstance == value.datasetInstance))
         grant = value
     }
 
@@ -47,7 +58,7 @@ class SessionGate {
         require(operation.isNotBlank())
         check(pending == null) // one synthetic operation at a time
         val current = grant!!
-        pending = PendingEdit(current.device, current.baseRevision, operation)
+        pending = PendingEdit(current.device, current.baseRevision, operation, current.datasetInstance)
     }
 
     /** Call only for an authenticated application-level applied acknowledgement. */

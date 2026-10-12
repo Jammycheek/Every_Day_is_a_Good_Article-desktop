@@ -12,7 +12,7 @@ class CrashHoldSmoke {
         long started = now();
         link.observe(1, new WindowsTransportReader(helper).sample(), started, now());
         if (link.getState() != TransportState.USB_MTP_READY) throw new IllegalStateException("Transport not ready");
-        pc.acceptGrant(new Grant("fake-monitor-phone", "mock-crash-session", 1, now() + 180000), now());
+        pc.acceptGrant(new Grant("fake-monitor-phone", "mock-crash-session", 1, now() + 180000, "fake-dataset-v1"), now());
         pc.loadSyntheticSnapshot(new byte[]{1,2,3}, now());
         pc.stage("fake-monitor-op", "SYNTHETIC-MONITOR-DELTA", now());
         if (!pc.canEdit(now()) || !pc.getHasSnapshot() || pc.getPending() == null)

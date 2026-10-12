@@ -4,6 +4,7 @@ data class RecoveryEdit(val metadata: PendingEdit, val syntheticDelta: String) {
     init {
         requireWellFormedUtf16(metadata.device)
         requireWellFormedUtf16(metadata.operation)
+        metadata.datasetInstance?.let { DatasetIdentity(metadata.device, it) }
         requireWellFormedUtf16(syntheticDelta)
     }
     /** Derived from the persisted identity, revision, operation and payload; not a signature. */
@@ -39,12 +40,16 @@ data class AppliedReceipt(
     val baseRevision: Long,
     val operation: String,
     val contentDigest: String,
-    val resultingRevision: Long
+    val resultingRevision: Long,
+    val datasetInstance: String
 )
 interface DeltaJournal {
     fun load(): RecoveryEdit?
     fun save(edit: RecoveryEdit)
     fun clear()
+    fun revisionFloor(identity: DatasetIdentity): Long?
+    /** Persist max(existing, revision) before pending deletion; fail rather than forget history. */
+    fun recordAppliedRevision(identity: DatasetIdentity, revision: Long)
 }
 
 /** Serialized calls only. Grants/receipts must already be authenticated by a future private channel. */
@@ -60,7 +65,13 @@ class RecoveryController(private val journal: DeltaJournal) {
     }
     fun acceptGrant(grant: Grant, now: Long) {
         val edit = readJournal()
-        check(edit == null || (edit.metadata.device == grant.device && edit.metadata.baseRevision == grant.baseRevision))
+        val identity = DatasetIdentity(grant.device, grant.datasetInstance)
+        val floor = try { journal.revisionFloor(identity) } catch (failure: Exception) {
+            suspendSession(); throw failure
+        }
+        check(floor == null || grant.baseRevision >= floor) { "Grant revision below verified floor" }
+        check(edit == null || (edit.metadata.device == grant.device && edit.metadata.baseRevision == grant.baseRevision &&
+            edit.metadata.datasetInstance == grant.datasetInstance))
         gate.acceptGrant(grant, now)
     }
     fun loadSyntheticSnapshot(bytes: ByteArray, now: Long) {
@@ -81,7 +92,7 @@ class RecoveryController(private val journal: DeltaJournal) {
         check(readJournal() == null)
         require(operation.isNotBlank() && syntheticDelta.isNotEmpty())
         val grant = gate.grant!!
-        val edit = RecoveryEdit(PendingEdit(grant.device, grant.baseRevision, operation), syntheticDelta)
+        val edit = RecoveryEdit(PendingEdit(grant.device, grant.baseRevision, operation, grant.datasetInstance), syntheticDelta)
         try {
             journal.save(edit) // persist BEFORE reporting the synthetic edit as staged
         } catch (failure: Exception) {
@@ -90,9 +101,10 @@ class RecoveryController(private val journal: DeltaJournal) {
         }
     }
     /** Recovery remains a pending proposal. Never automatically replay it to the phone. */
-    fun recoveryCandidate(device: String, revision: Long): RecoveryEdit? {
+    fun recoveryCandidate(device: String, revision: Long, datasetInstance: String): RecoveryEdit? {
         val edit = readJournal() ?: return null
-        check(edit.metadata.device == device && edit.metadata.baseRevision == revision)
+        check(edit.metadata.device == device && edit.metadata.baseRevision == revision &&
+            edit.metadata.datasetInstance == datasetInstance)
         return edit
     }
     /** Read-only outcome reconciliation needs no transport or editing grant. Never grants editing.
@@ -100,7 +112,8 @@ class RecoveryController(private val journal: DeltaJournal) {
      */
     fun reconcileApplied(receipt: AppliedReceipt): ReconciliationResult {
         val edit = readJournal() ?: return ReconciliationResult.NO_PENDING
-        if (receipt.device != edit.metadata.device || receipt.operation != edit.metadata.operation)
+        if (receipt.device != edit.metadata.device || receipt.operation != edit.metadata.operation ||
+            receipt.datasetInstance != edit.metadata.datasetInstance)
             return ReconciliationResult.NOT_THIS_OPERATION
         if (receipt.baseRevision != edit.metadata.baseRevision || receipt.contentDigest != edit.contentDigest ||
             receipt.resultingRevision <= receipt.baseRevision) {
@@ -108,6 +121,7 @@ class RecoveryController(private val journal: DeltaJournal) {
             return ReconciliationResult.CONFLICT
         }
         suspendSession() // a matching applied result makes the current snapshot obsolete
+        journal.recordAppliedRevision(DatasetIdentity(receipt.device, receipt.datasetInstance), receipt.resultingRevision)
         journal.clear() // only the exact persisted operation's trusted applied receipt permits clearing
         return ReconciliationResult.CLEARED
     }
