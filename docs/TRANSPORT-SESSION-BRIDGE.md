@@ -25,3 +25,11 @@ After the monitor/expiry fixture exits normally, keep the phone in file-transfer
 java -cp <poc-cli.jar> tools/RecoveryRestartCheck.java <helper.exe> <same-local-private-journal-directory>
 ```
 This new JVM loads the existing encrypted fake-monitor operation and compares it with the known synthetic fixture. It requires ready real transport, checks that editing remains disabled and no snapshot is restored, and leaves the pending edit intact. Success is process-restart-recovery-verified=1 and exit 0. It issues no grant or acknowledgement and writes no phone files. This is a normal application-process restart check, not Windows reboot, forced termination or power-loss testing.
+
+## Forced termination after completed save
+With one ready phone, start a dedicated child JVM using a **fresh** local journal directory:
+```text
+java -cp <poc-cli.jar> tools/CrashHoldSmoke.java <helper.exe> <fresh-local-private-journal-directory>
+```
+The child stages a synthetic edit through the controller, reloads it, prints crash-fixture-ready=1 and waits up to 60 seconds. Only after this marker, forcibly terminate this specific child using its captured process handle/PID, wait for termination, then run RecoveryRestartCheck against that directory. Never terminate all Java processes by name. The child is deliberately a paused crash fixture, not an active polling monitor. It never writes phone files or acknowledges edits.
+This covers forced process termination after save completion, not a kill during encryption/atomic replacement, an OS reboot or power loss.

@@ -104,3 +104,12 @@ After the lease-expiry driver JVM exited normally, tools/RecoveryRestartCheck.ja
 - process-restart-recovery-verified=1; process exit 0. The driver also compiled for Java 17.
 
 This verifies synthetic pending-edit persistence across normal process termination and restart while connected, without restoring editing permission or snapshot. No grant, acknowledgement, replay or phone write occurred. Windows reboot, forced termination, interruption during journal replacement and power loss remain untested. Recovery is a pending proposal only; actual Android application recovery remains unverified.
+
+## Forced process termination after completed synthetic save
+Using tools/CrashHoldSmoke.java with a fresh local journal directory, a dedicated child JVM observed ready real MTP transport, accepted an explicit mock grant, loaded a synthetic snapshot and saved one synthetic edit through the controller. After its crash-fixture-ready marker (editing/snapshot/pending all true), the parent forcibly stopped only that captured child PID and confirmed termination. A new JVM then ran RecoveryRestartCheck against the same directory.
+- The pending edit reloaded equal to the known synthetic fixture.
+- New-process real transport was USB_MTP_READY; mock-can-edit=false, snapshot=false, pending=true.
+- The encrypted journal SHA-256 matched before/after termination and recovery (digest not published).
+- forced-stop-recovery-verified=1; encrypted-journal-unchanged=true; parent exited 0.
+
+This verifies retention after forced termination of a paused PoC JVM with a completed save. The snapshot is absent in the new process; this does not prove forensic erasure of the terminated process's memory/pagefile. No phone files were written and no other application was terminated. Interrupting journal replacement, Windows reboot, power loss and private Android lock/recovery remain unverified.
