@@ -20,6 +20,7 @@ Verified revision floors are persisted by application identity/incarnation befor
 The same Windows user typically restores data; Windows account/profile loss is outside this PoC. Admin/same-user malware is not addressed by these measures.
 
 ## Verification
+R3/R4 separates protected temporary prefixes, renames recordVerifiedRevision and removes SessionGate's duplicate recovery model. Pending compatibility and deletion remain in RecoveryController only; see REVIEW-STORAGE-CLEANUP.md.
 Common tests cover detach, expiry, restart, wrong identity/revision, persistence failure, mismatched/duplicate applied receipts, clear/read failure and lost acknowledgement after revision advance.
 Windows JVM integration tests use the actual native DPAPI helper for deltas, floors, corruption and legacy retention. The three-JVM smoke seeds revision 5, reconciles 5 -> 6, then verifies older-grant rejection from a new JVM.
 Build the native helper, set POC_HELPER to its absolute path, then run gradle jvmTest. CI does this in Windows. All test data is synthetic.
