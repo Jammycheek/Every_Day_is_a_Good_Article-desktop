@@ -121,3 +121,13 @@ tools/CorruptJournalCheck.java used the same CI-built controller/helper with rea
 - corruption-safety-verified=1; process exit 0; Java 17 compilation succeeded.
 
 No phone files or real data were changed. This verifies fail-closed revocation and preservation for one DPAPI corruption case; it does not restore corrupted contents, test every malformed file, or substitute for interruption-during-save testing. The damaged synthetic copy remains in the ignored local build directory.
+
+## Synthetic recovery identity and base-revision mismatch
+tools/RecoveryIdentityCheck.java used the CI-built controller/helper and the known encrypted synthetic monitor edit while real MTP transport was ready. Application identities and revisions were explicit fixture values, not hardware-derived identity.
+- Recovery candidates for a different fake phone or base revision were rejected.
+- Explicit mock grants for those mismatches were rejected; editing stayed disabled and no snapshot was loaded.
+- A matching explicit mock grant was accepted; the correct recovery candidate matched, but no snapshot was automatically restored.
+- Session suspension retained the pending edit and the encrypted journal remained byte-for-byte unchanged.
+- recovery-identity-verified=1; process exit 0; Java 17 compilation succeeded.
+
+No phone write, acknowledgement or automatic replay occurred. This confirms controller mismatch checks against synthetic metadata only. Authenticating an Android identity, obtaining its authoritative revision and handling real application conflicts remain outside this public PoC and unverified.

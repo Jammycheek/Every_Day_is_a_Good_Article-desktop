@@ -40,3 +40,10 @@ Keep one phone ready and run against the known synthetic monitor journal:
 java -cp <poc-cli.jar> tools/CorruptJournalCheck.java <helper.exe> <source-synthetic-journal-directory> <local-build-copies-directory>
 ```
 The driver verifies the source contains only the known synthetic fixture, saves that edit into a fresh owner-restricted encrypted journal, establishes a mock session and then flips the last byte of the disposable journal. It requires the read to fail, editing permission to be revoked, the snapshot to be released, the damaged bytes to remain unchanged, and the source journal to remain unchanged. It leaves the damaged synthetic copy in the local build directory; no phone writes or application acknowledgements occur. Success is corruption-safety-verified=1 and exit 0. This single corruption case does not establish resilience to every malformed file or a crash during save.
+
+## Synthetic recovery identity / revision check
+With one ready phone and the known synthetic monitor journal:
+```text
+java -cp <poc-cli.jar> tools/RecoveryIdentityCheck.java <helper.exe> <source-synthetic-journal-directory>
+```
+The driver rejects recovery candidates and mock grants with a different synthetic application identity or base revision. It then accepts an explicit matching mock grant, verifies that no snapshot is automatically loaded and that the recovery candidate matches, and suspends the session without acknowledgement or replay. The encrypted journal must remain unchanged. Success is recovery-identity-verified=1 and exit 0. These identities are fixture constants, not WPD device selectors; no private Android authentication channel is exercised.
