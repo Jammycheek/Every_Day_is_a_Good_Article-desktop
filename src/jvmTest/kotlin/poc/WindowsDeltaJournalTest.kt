@@ -23,9 +23,12 @@ class WindowsDeltaJournalTest {
             assertFalse(restarted.hasSnapshot); assertFalse(restarted.canEdit(2))
             assertEquals("SYNTHETIC-SECRET-DELTA", restarted.recoveryCandidate("fake-phone", 7)?.syntheticDelta)
             assertFailsWith<IllegalStateException> { restarted.recoveryCandidate("different", 7) }
-            restarted.observeTransport(true); restarted.acceptGrant(Grant("fake-phone", "s2", 7, 200), 101)
-            restarted.acknowledge("fake-phone", "s2", "fake-op", 102)
+            val edit = restarted.pending!!
+            restarted.reconcileApplied(AppliedReceipt("fake-phone", 7, "fake-op", edit.contentDigest, 8))
             assertFalse(Files.exists(directory.resolve("pending.dpapi")))
+            assertFalse(restarted.canEdit(102)); assertFalse(restarted.hasSnapshot)
+            restarted.observeTransport(true); restarted.acceptGrant(Grant("fake-phone", "s2", 8, 200), 103)
+            restarted.suspendSession()
             journal.save(RecoveryEdit(PendingEdit("fake-phone", 7, "fake-op"), "SYNTHETIC-SECRET-DELTA"))
             val damaged = Files.readAllBytes(directory.resolve("pending.dpapi"))
             damaged[damaged.lastIndex] = (damaged.last().toInt() xor 0xff).toByte()

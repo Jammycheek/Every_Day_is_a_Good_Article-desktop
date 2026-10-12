@@ -25,6 +25,12 @@ jobs:
         run: |
           $env:POC_HELPER = Join-Path $PWD 'build/native/Release/wpd-probe.exe'
           gradle --no-daemon jvmTest runRecoveryRestartSmoke pocCliJar
+      - name: Compile manual synthetic hardware drivers (no device access)
+        shell: pwsh
+        run: |
+          $fixtureSources = @(Get-ChildItem tools/*.java | ForEach-Object FullName)
+          javac --release 17 -cp build/libs/poc-cli.jar -d build/manual-fixture-classes $fixtureSources
+          if ($LASTEXITCODE -ne 0) { throw 'Manual fixture compilation failed' }
       - run: gradle --no-daemon runWindowsProbe -PprobeCommand=self-test
       - uses: actions/upload-artifact@v4
         with:

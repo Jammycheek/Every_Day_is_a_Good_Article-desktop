@@ -24,9 +24,15 @@ object RecoverySmoke {
                 check(controller.recoveryCandidate("fake-restart-phone", 5)?.syntheticDelta == "SYNTHETIC-RESTART-DELTA")
                 controller.observeTransport(true)
                 check(!controller.canEdit(3))
-                controller.acceptGrant(Grant("fake-restart-phone", "mock-session-2", 5, 100), 3)
-                controller.acknowledge("fake-restart-phone", "mock-session-2", "fake-restart-operation", 4)
+                controller.tick(100)
+                val edit = controller.pending!!
+                // A lost applied reply is queried after expiry; phone revision has advanced 5 -> 6.
+                controller.reconcileApplied(AppliedReceipt("fake-restart-phone", 5,
+                    "fake-restart-operation", edit.contentDigest, 6))
                 check(journal.load() == null)
+                check(!controller.canEdit(101) && !controller.hasSnapshot)
+                controller.acceptGrant(Grant("fake-restart-phone", "mock-session-2", 6, 200), 101)
+                controller.suspendSession()
                 println("separate-jvm-recovery-verified=true")
             }
             else -> error("Unknown fixture")

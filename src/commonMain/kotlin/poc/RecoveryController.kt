@@ -1,13 +1,28 @@
 package poc
 
-data class RecoveryEdit(val metadata: PendingEdit, val syntheticDelta: String)
+data class RecoveryEdit(val metadata: PendingEdit, val syntheticDelta: String) {
+    /** Derived from the persisted identity, revision, operation and payload; not a signature. */
+    val contentDigest: String get() = recoveryContentDigest(metadata, syntheticDelta)
+}
+internal expect fun recoveryContentDigest(metadata: PendingEdit, syntheticDelta: String): String
+
+/** Only pass a verified application applied receipt from a future authenticated channel.
+ * Construction is NOT authentication. Device denotes the synthetic application/data identity.
+ */
+data class AppliedReceipt(
+    val device: String,
+    val baseRevision: Long,
+    val operation: String,
+    val contentDigest: String,
+    val resultingRevision: Long
+)
 interface DeltaJournal {
     fun load(): RecoveryEdit?
     fun save(edit: RecoveryEdit)
     fun clear()
 }
 
-/** Serialized calls only. All grants/acks must already be authenticated by a future private channel. */
+/** Serialized calls only. Grants/receipts must already be authenticated by a future private channel. */
 class RecoveryController(private val journal: DeltaJournal) {
     private val gate = SessionGate()
     private var snapshot: ByteArray? = null
@@ -55,14 +70,16 @@ class RecoveryController(private val journal: DeltaJournal) {
         check(edit.metadata.device == device && edit.metadata.baseRevision == revision)
         return edit
     }
-    fun acknowledge(device: String, session: String, operation: String, now: Long) {
-        check(canEdit(now))
-        val grant = gate.grant!!
+    /** Read-only outcome reconciliation needs no transport or editing grant. Never grants editing.
+     * Query/authenticate the outcome BEFORE acquiring a grant at the resulting revision.
+     */
+    fun reconcileApplied(receipt: AppliedReceipt) {
+        suspendSession() // even a failed/mismatched reconciliation cannot leave editing enabled
         val edit = readJournal() ?: error("No pending edit")
-        check(grant.device == device && grant.session == session && edit.metadata.operation == operation)
-        try {
-            journal.clear() // only after a validated applied ack; clear failure retains pending recovery
-        } finally { suspendSession() }
+        check(receipt.device == edit.metadata.device && receipt.baseRevision == edit.metadata.baseRevision)
+        check(receipt.operation == edit.metadata.operation && receipt.contentDigest == edit.contentDigest)
+        check(receipt.resultingRevision > receipt.baseRevision)
+        journal.clear() // only the exact persisted operation's trusted applied receipt permits clearing
     }
     fun suspendSession() {
         gate.suspendSession()
