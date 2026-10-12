@@ -43,3 +43,10 @@ The successful Windows CI run publishes wpd-probe-windows-x64 (7-day retention),
 Treat a test as successful only when BOTH roundtrip-verified=1 and exit code 0 are present. Timeout/other nonzero exit means failure even if earlier progress was printed.
 Device output uses Unicode on a Windows console and UTF-8 when redirected.
 The local agent runtime is currently blocked by the MXC E: launcher error; do not connect a phone until a local execution path is ready and the user is notified.
+
+## User-operated disconnect during a slow synthetic transfer
+Use roundtrip-slow with the same explicit --synthetic-write 64k arguments. It writes at most 1 KiB per iteration and waits one second after each successful write (about 64 seconds without interruption). The helper deadline is 90 seconds; the Kotlin process deadline is 95 seconds. It never renews an editing session.
+
+Confirm the dedicated folder and connected phone first. Start the transfer, wait for transfer-written progress, then tell the user to unplug. Nonzero exit / timeout and no verified result is expected. Never auto-retry or claim rollback: device drivers can buffer writes or leave a partial file. After the user reconnects, reacquire device and folder IDs, inspect only the dedicated folder, and repeat the normal small roundtrip to check transport recovery. Leave test files for manual cleanup. This test covers synthetic transport failure, not durable application delta protection.
+
+The default launcher still fails on encrypted E:, but a C: execution path and local VS2019 build have been verified; E: is not used.
