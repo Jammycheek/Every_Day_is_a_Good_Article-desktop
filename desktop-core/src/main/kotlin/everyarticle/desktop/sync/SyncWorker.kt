@@ -3,7 +3,6 @@ package everyarticle.desktop.sync
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicReference
 
 /** What the editor currently shows. Handed from the UI thread to the sync worker. */
 data class EditorText(val articleId: Long, val title: String?, val body: String)
@@ -19,8 +18,13 @@ enum class CloseState { OPEN, CLOSING, BLOCKED_BY_UNSAVED, READY, EXITING }
  *
  * Submit and close run concurrently with the editor, so both freeze input the moment they are requested
  * ([onInputFrozen], called synchronously on the caller's thread) and only finish after every input accepted
- * until then has been saved or set aside. Input that still arrives (an event already in flight) is never dropped:
- * it is kept as unsaved input and, for close, turns READY back into BLOCKED_BY_UNSAVED.
+ * until then has been saved or set aside:
+ * - Input that arrives while a submit is pending is held in a separate slot ([afterSubmit]) that no other task
+ *   flushes, so it can neither be overwritten by the click-time text nor be saved ahead of it. It moves to the
+ *   normal slot only after the submit has finished.
+ * - Text taken from the slot but not yet saved is counted ([inFlight]). Close becomes READY only when the slot,
+ *   the submit hold and the in-flight count are all empty and no unsaved input exists; the last finishing save
+ *   re-runs that decision. Input arriving after READY turns it back into BLOCKED_BY_UNSAVED.
  */
 class SyncWorker(
     clientFactory: ((ClientView) -> Unit) -> PcSyncClient,
@@ -33,24 +37,31 @@ class SyncWorker(
     tickPeriodMillis: Long = 1_000
 ) {
     private val worker = Executors.newSingleThreadScheduledExecutor { Thread(it, "everyarticle-sync").apply { isDaemon = true } }
-    private val latest = AtomicReference<EditorText?>(null)
     @Volatile private var scheduledSave: ScheduledFuture<*>? = null
     private lateinit var client: PcSyncClient
+    /** Latest view, readable from the UI thread for the final exit check. */
+    @Volatile private var lastView = ClientView()
 
-    /** Guards [closeState], [submitting] and the hand-off between [latest] and the close decision. */
+    /** Guards every field below; all hand-offs of editor text happen under it. */
     private val lock = Any()
+    private var latest: EditorText? = null
+    private var afterSubmit: EditorText? = null
+    private var inFlight = 0
     private var closeState = CloseState.OPEN
     private var submitting = false
+    /** The close task has released the phone; until then no other task may declare the close READY. */
+    private var closeReleased = false
 
     init {
         worker.execute {
-            client = clientFactory(onView)
-            onView(client.view)
+            client = clientFactory { lastView = it; onView(it) }
+            lastView = client.view; onView(client.view)
             guarded { client.initialize() }
         }
         if (tickPeriodMillis > 0) worker.scheduleWithFixedDelay({
             flush()
             guarded { if (client.view.pairingInProgress) client.pollPairing() else client.tick() }
+            settleIfClosing()
         }, tickPeriodMillis, tickPeriodMillis, TimeUnit.MILLISECONDS)
     }
 
@@ -58,11 +69,16 @@ class SyncWorker(
         try { block() } catch (t: Throwable) { onError(describe(t)) }
     }
 
-    /** Save the newest editor text now, if any. A failure is recorded by the client as [ClientView.unsaved]. */
-    private fun flush() {
-        val text = latest.getAndSet(null) ?: return
-        guarded { client.saveDraft(text.articleId, text.title, text.body) }
+    /** Take the newest text out of the slot; it counts as in flight until [save] finishes. */
+    private fun take(): EditorText? = synchronized(lock) { latest?.also { latest = null; inFlight++ } }
+
+    /** A failure is recorded by the client as [ClientView.unsaved]. */
+    private fun save(text: EditorText) {
+        try { guarded { client.saveDraft(text.articleId, text.title, text.body) } }
+        finally { synchronized(lock) { inFlight-- } }
     }
+
+    private fun flush() { take()?.let(::save) }
 
     private fun setCloseState(state: CloseState) { closeState = state; onCloseState(state) }
     private fun publishFrozen() = onInputFrozen(submitting || closeState != CloseState.OPEN)
@@ -71,6 +87,7 @@ class SyncWorker(
         worker.execute {
             onBusy(label); onError(null)
             try { flush(); client.action() } catch (t: Throwable) { onError(describe(t)) } finally { onBusy(null) }
+            settleIfClosing()
         }
     }
 
@@ -80,28 +97,29 @@ class SyncWorker(
      */
     fun editorChanged(text: EditorText) {
         synchronized(lock) {
-            latest.set(text)
+            if (submitting) afterSubmit = text else latest = text
             if (closeState == CloseState.READY) { setCloseState(CloseState.BLOCKED_BY_UNSAVED); publishFrozen() }
         }
         scheduledSave?.cancel(false)
-        scheduledSave = worker.schedule({ flush() }, autosaveDelayMillis, TimeUnit.MILLISECONDS)
+        scheduledSave = worker.schedule({ flush(); settleIfClosing() }, autosaveDelayMillis, TimeUnit.MILLISECONDS)
     }
 
     /** Before the editor shows another article: queue the current text's save ahead of anything typed next. */
     fun flushNow() {
         scheduledSave?.cancel(false)
-        val text = latest.getAndSet(null) ?: return
-        worker.execute { guarded { client.saveDraft(text.articleId, text.title, text.body) } }
+        val text = take() ?: return
+        worker.execute { save(text); settleIfClosing() }
     }
 
     /**
      * Submit exactly the on-screen [text]; if it cannot be saved, nothing is sent. Input is frozen from the click
-     * until the reply is handled. Anything typed after the click is newer than the submission, so it is never
-     * written over it nor overwritten by it: it is saved afterwards if still possible, otherwise kept as unsaved.
+     * until the reply is handled. Anything typed after the click is held aside until then, so no task that was
+     * already queued can save it ahead of the submission, and the submission cannot overwrite it. Afterwards it is
+     * saved if still possible, otherwise kept as unsaved input.
      */
     fun submit(text: EditorText) {
         scheduledSave?.cancel(false)
-        synchronized(lock) { submitting = true; latest.set(null); publishFrozen() }
+        synchronized(lock) { submitting = true; latest = null; afterSubmit = null; publishFrozen() }
         worker.execute {
             onBusy("提出中"); onError(null)
             try {
@@ -109,9 +127,13 @@ class SyncWorker(
                 client.submit()
             } catch (t: Throwable) { onError(describe(t)) }
             finally {
+                synchronized(lock) {
+                    afterSubmit?.let { latest = it }
+                    afterSubmit = null; submitting = false; publishFrozen()
+                }
                 flush() // input that arrived after the click
-                synchronized(lock) { submitting = false; publishFrozen() }
                 onBusy(null)
+                settleIfClosing()
             }
         }
     }
@@ -122,21 +144,26 @@ class SyncWorker(
      */
     fun requestClose() {
         scheduledSave?.cancel(false)
-        synchronized(lock) { setCloseState(CloseState.CLOSING); publishFrozen() }
+        synchronized(lock) { closeReleased = false; setCloseState(CloseState.CLOSING); publishFrozen() }
         worker.execute {
             flush()
             guarded { client.release() }
-            settleClose()
+            synchronized(lock) { closeReleased = true }
+            settleIfClosing()
         }
     }
 
-    /** Decide READY only when the input slot is empty at the moment of the decision (under [lock]). */
-    private fun settleClose() {
+    /**
+     * Decide while CLOSING (worker thread). READY needs an empty slot, nothing in flight, no pending submit and no
+     * unsaved input. If a save or submit is still queued, the decision is left to it: it calls this again when done.
+     */
+    private fun settleIfClosing() {
         while (true) {
             flush()
             synchronized(lock) {
-                if (closeState != CloseState.CLOSING) return
-                if (latest.get() == null) {
+                if (closeState != CloseState.CLOSING || !closeReleased) return
+                if (latest == null) {
+                    if (inFlight > 0 || submitting || afterSubmit != null) return
                     setCloseState(if (client.view.unsaved == null) CloseState.READY else CloseState.BLOCKED_BY_UNSAVED)
                     return
                 }
@@ -153,7 +180,7 @@ class SyncWorker(
         worker.execute {
             flush()
             guarded { client.discardUnsaved(shown) }
-            settleClose()
+            settleIfClosing()
         }
     }
 
@@ -165,10 +192,16 @@ class SyncWorker(
 
     /**
      * Call on the UI thread right before exiting, in the same task as the exit itself: true only if close is still
-     * READY (no input arrived since the decision). Afterwards nothing can reopen it.
+     * READY and, re-checked here, no input is waiting, in flight, held for a submit or shown as unsaved.
+     * Otherwise the decision goes back to the worker. Afterwards nothing can reopen it.
      */
     fun confirmExit(): Boolean = synchronized(lock) {
         if (closeState != CloseState.READY) return false
+        if (latest != null || inFlight > 0 || submitting || afterSubmit != null || lastView.unsaved != null) {
+            setCloseState(CloseState.CLOSING)
+            worker.execute { settleIfClosing() }
+            return false
+        }
         setCloseState(CloseState.EXITING)
         true
     }

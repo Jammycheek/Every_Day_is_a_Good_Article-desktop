@@ -350,6 +350,70 @@ class RoundTripTest {
         w.shutdown()
     }
 
+    // ---------- second re-review: tasks already queued, and saves handed to another task ----------
+
+    private fun blockWorker(w: SyncWorker): java.util.concurrent.CountDownLatch {
+        val gate = java.util.concurrent.CountDownLatch(1)
+        w.run("先行処理") { gate.await(30, java.util.concurrent.TimeUnit.SECONDS) }
+        return gate
+    }
+
+    @Test fun aTaskQueuedBeforeSubmitCannotSaveLaterInputAheadOfTheSubmission() {
+        val w = worker()
+        w.run("接続") { connect() }; w.awaitIdle()
+        val gate = blockWorker(w)
+        w.run("確認") { tick() } // already queued before the click; flushes the input slot when it runs
+        w.submit(EditorText(1, "見出し", "押した時点の文章"))
+        w.editorChanged(EditorText(1, "見出し", "押した後の追加入力")) // event already in flight
+        gate.countDown(); w.awaitIdle()
+        assertEquals("押した時点の文章", store.article(1)!!.body)
+        assertEquals(1, store.operationCount())
+        assertEquals("押した後の追加入力", workerView.unsaved?.body, "kept aside, neither saved first nor overwritten")
+        w.shutdown()
+    }
+
+    @Test fun aSaveHandedToAnotherTaskKeepsTheCloseUndecidedUntilItFinishes() {
+        val w = worker()
+        w.run("接続") { connect() }; w.awaitIdle()
+        val gate = blockWorker(w)
+        w.requestClose()
+        w.editorChanged(EditorText(1, "見出し", "終了中に預けた入力"))
+        w.flushNow() // takes the slot and queues its own save behind the close task
+        gate.countDown(); w.awaitIdle()
+        assertEquals("終了中に預けた入力", workerView.unsaved?.body)
+        assertEquals(CloseState.BLOCKED_BY_UNSAVED, closeState, "close never became READY while the save was pending")
+        assertFalse(w.confirmExit())
+        w.shutdown()
+    }
+
+    @Test fun closeRequestedDuringSubmitWaitsForTheSubmitAndItsLaterInput() {
+        val w = worker()
+        w.run("接続") { connect() }; w.awaitIdle()
+        val gate = blockWorker(w)
+        w.submit(EditorText(1, "見出し", "提出中に閉じる"))
+        w.editorChanged(EditorText(1, "見出し", "提出中の追加入力"))
+        w.requestClose()
+        gate.countDown(); w.awaitIdle()
+        assertEquals("提出中に閉じる", store.article(1)!!.body)
+        assertEquals("提出中の追加入力", workerView.unsaved?.body)
+        assertEquals(CloseState.BLOCKED_BY_UNSAVED, closeState)
+        w.shutdown()
+    }
+
+    @Test fun noOtherTaskDeclaresTheCloseReadyBeforeThePhoneIsReleased() {
+        val w = worker()
+        w.run("接続") { connect() }; w.awaitIdle()
+        val latch = blockWorker(w)
+        var stateAfterTick: CloseState? = null
+        w.run("確認") { tick(); stateAfterTick = closeState } // queued ahead of the close task
+        w.requestClose()
+        latch.countDown(); w.awaitIdle()
+        assertEquals(CloseState.CLOSING, stateAfterTick, "not READY before the close task released the phone")
+        assertEquals(CloseState.READY, closeState); assertFalse(workerView.sessionActive)
+        phone.poll(); gate.localWrite { } // the phone got the release and is unlocked
+        w.shutdown()
+    }
+
     // ---------- finding 2: unreadable pairing data is handled on screen, never by losing edits ----------
 
     private class FakeProtector {

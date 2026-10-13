@@ -146,10 +146,13 @@ overtake the debounced autosave. Submitting saves exactly the on-screen text and
 
 Submit and close run concurrently with the editor, so both make the editor read-only the moment they are requested
 and finish only after every input accepted until then is saved or set aside. Input typed after the submit click is
-newer than the submission: it is never written over the submitted text nor overwritten by it, and is saved after
-the reply if still possible, otherwise kept as unsaved input. Close decides "ready" only while the input slot is
-empty; input arriving after that decision turns it back into "blocked", and the exit itself re-checks this on the
-UI thread in the same step that closes the window.
+newer than the submission: it is held aside until the submit has finished, so no task that was already queued can
+save it ahead of the submission and the submission cannot overwrite it; afterwards it is saved if still possible,
+otherwise kept as unsaved input. Close decides "ready" only after its own release step and only while nothing is
+waiting: the input slot is empty, no save taken from it is still pending, no submit (or input held for it) is
+pending and no unsaved input exists; the last pending save re-runs the decision. Input arriving after that decision
+turns it back into "blocked", and the exit itself re-checks all of this on the UI thread in the same step that
+closes the window.
 
 If the text can no longer be saved (permission already ended, journal write failed, another article holds the
 pending edit), it is kept in memory as *unsaved input*, shown outside the editor with "save as text" and a confirmed
