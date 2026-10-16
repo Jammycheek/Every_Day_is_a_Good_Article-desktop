@@ -160,7 +160,9 @@ private fun PairingPanel(view: ClientView, controller: AppController) {
 private fun SessionPanel(view: ClientView, controller: AppController) {
     val connecting by controller.connecting.collectAsState()
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        if (!view.sessionActive) Button(enabled = view.transportReady && !connecting, onClick = controller::connect) { Text("接続して取り込む") }
+        // A failed background probe must not disable the action that performs a fresh probe.
+        // connect() still refuses status/permission requests unless that fresh probe succeeds.
+        if (!view.sessionActive) Button(enabled = !connecting, onClick = controller::connect) { Text("接続して取り込む") }
         else OutlinedButton(enabled = !connecting, onClick = { controller.run("終了") { release() } }) { Text("編集を終えてスマホのロックを解除") }
         OutlinedButton(enabled = !connecting, onClick = { controller.run("解除") { forgetPairing() } }) { Text("このPCのペアリングを解除") }
     }

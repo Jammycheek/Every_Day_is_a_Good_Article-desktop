@@ -169,6 +169,11 @@ class RoundTripTest {
         assertTrue(failure.message!!.contains("USB/MTP")); assertEquals(0, sends)
         assertNotNull(pc.view.transportProblem); assertNull(pc.view.connectionStep)
         assertEquals("保護して残す", journalBody())
+        transport = true
+        pc.connect() // A fresh check can recover, without deleting the pairing or protected text.
+        assertTrue(pc.view.sessionActive); assertNull(pc.view.transportProblem)
+        assertEquals("保護して残す", journalBody())
+        assertEquals(0, store.operationCount())
     }
 
     @Test fun snapshotTimeoutReleasesTheGrantSoConnectingCanBeRetried() {

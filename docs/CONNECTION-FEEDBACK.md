@@ -41,6 +41,23 @@ The original intermittent USB failure remains unconfirmed. The foreground requir
 phone's PC-link screen **before** Connect/import and keep it open. A screen opened during the reply budget can
 still answer; it must not be categorically blamed for all connection failures.
 
+### Follow-up: failure captured and manual retry (2026-10-16)
+
+The next screenshot showed a failed probe and a disabled Connect/import button. The disabled button was a UI
+dead end: the action itself already performs a fresh probe before sending anything, so it must be enabled even
+when the last background probe was unsuccessful. It remains disabled while a connection is queued or in progress.
+
+During diagnosis, device enumeration found one USB descendant, but WPD open did not finish within a 3.5-second
+diagnostic window in either normal or isolated LOCALAPPDATA environments. The blocked diagnostic child processes
+were terminated; neither phone data nor protected edits were changed. The app was closed through its normal
+save/release path to stop periodic probing. After the user reconnected USB, WPD open finished in 129 ms. The actual
+Java WindowsTransportReader then returned USB_MTP_READY in all three samples (201, 90 and 112 ms).
+
+This captures the WPD-open stall symptom and its recovery, not the underlying Windows/phone cause. The retry button
+does not bypass transport checks or allow editing while transport is unconfirmed. Its regression case first rejects
+an unavailable transport without sending, then accepts a fresh successful check, preserving pending text without
+applying it to the phone. Final UI import and pending-text restoration remain user verification steps.
+
 ## Regression coverage
 
 Synthetic tests cover slow sends, slow receives, a reply exactly at the deadline, slow deletes, slow empty polls,
