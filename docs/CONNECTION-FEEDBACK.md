@@ -99,3 +99,29 @@ The app remains normally closed, with its pending edit protected. A fresh USB re
 property helper installed is the next controlled comparison. Do not mark the full import or user-visible recovery
 as passed from the probe-only results. The broader native property change is not covered by the earlier JVM run;
 its actual mailbox/stream validation remains pending.
+
+## Follow-up: successful full imports with COM release ordering
+
+After the requested USB reset, the selective-property build completed the status-request write, but the next
+short-lived client stalled in Open. The old Device destructor explicitly called Close while its Content interface
+was still held. The destructor now releases Content first and then the Device COM reference, allowing WPD to close
+at final release instead of forcibly invalidating live child interfaces. This follows the lifecycle described in
+[IPortableDevice::Close](https://learn.microsoft.com/en-us/windows/win32/api/portabledeviceapi/nf-portabledeviceapi-iportabledevice-close).
+
+No further USB reset was needed before testing this change. A local Java validation driver used the actual
+PcSyncClient, WpdMailbox, DPAPI pairing and existing protected journal. It called initialize, connect and release;
+it never called saveDraft, submit, resubmit, discard or forget. It compared the loaded pending RecoveryEdit before
+and after each connection and printed no article content, peer IDs or keys.
+
+Three consecutive runs in separate JVMs succeeded:
+
+| Run | Status through snapshot | Articles | Pending edit equal before/after |
+| --- | --- | --- | --- |
+| 1 | 8,294 ms | 6 | yes |
+| 2 | 5,423 ms | 6 | yes |
+| 3 | 5,626 ms | 6 | yes |
+
+Each run acquired and released a real synthetic edit grant, so normal verified history/epochs advanced. The pending
+edit did not change and no article edit was submitted. Native CTest 2/2 passed. This provides evidence of recovery
+with the revised implementation; it does not prove how the underlying Windows/Android stack entered the bad state,
+nor establish behavior on other devices. UI import and editor-text restoration still require the user's view.

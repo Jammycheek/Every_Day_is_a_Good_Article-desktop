@@ -125,7 +125,13 @@ struct Device {
         checked(device->Content(&content));
         probeStage("content-opened");
     }
-    ~Device() { if (device) { probeStage("close-device"); device->Close(); probeStage("device-closed"); } }
+    ~Device() {
+        // Release content interfaces before the device. Calling Close with live child interfaces can
+        // leave the next short-lived client waiting on the preceding transfer's teardown.
+        probeStage("release-content"); content.Reset();
+        probeStage("release-device"); device.Reset();
+        probeStage("device-released");
+    }
     Device(const Device&) = delete;
     Device& operator=(const Device&) = delete;
 };
