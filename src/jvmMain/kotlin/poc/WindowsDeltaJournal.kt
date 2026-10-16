@@ -81,6 +81,12 @@ class DpapiProtector internal constructor(private val command: (Boolean) -> List
     }
 }
 
+/** The chosen export folder has no Windows ACLs; ask the user before calling again with explicit permission. */
+class UnprotectedExportDestinationException : IllegalStateException("Destination filesystem has no access control lists")
+
+/** One article title+body edit plus framing; keeps the DPAPI record below the 128 KiB helper bound. */
+const val MAX_DELTA_BYTES = 102_400
+
 class JournalInUseException : IllegalStateException("Recovery directory is already in use")
 
 /** Owns one recovery directory until close/process exit. Callers must still serialize controller calls. */
@@ -146,12 +152,18 @@ class WindowsDeltaJournal(private val directory: Path, private val protector: Dp
         try {
             DataInputStream(ByteArrayInputStream(plain)).use {
                 val version = it.readInt()
-                check(version == 0x45415031 || version == 0x45415032) { "Unsupported recovery version" }
+                check(version == 0x45415031 || version == 0x45415032 || version == 0x45415033) { "Unsupported recovery version" }
                 val device = it.readUTF()
-                val instance = if (version == 0x45415032) it.readUTF() else null
-                val revision = it.readLong(); val operation = it.readUTF(); val delta = it.readUTF()
+                val instance = if (version != 0x45415031) it.readUTF() else null
+                val revision = it.readLong(); val operation = it.readUTF()
+                val submitted = if (version == 0x45415033) it.readBoolean() else false
+                val delta = if (version == 0x45415033) {
+                    val size = it.readInt(); check(size in 1..MAX_DELTA_BYTES)
+                    val bytes = ByteArray(size); it.readFully(bytes)
+                    try { Charsets.UTF_8.newDecoder().decode(java.nio.ByteBuffer.wrap(bytes)).toString() } finally { bytes.fill(0) }
+                } else it.readUTF()
                 check(it.read() == -1 && revision >= 0 && device.isNotBlank() && operation.isNotBlank() && delta.isNotEmpty())
-                return RecoveryEdit(PendingEdit(device, revision, operation, instance), delta)
+                return RecoveryEdit(PendingEdit(device, revision, operation, instance), delta, submitted)
             }
         } catch (failure: Exception) { throw StorageFormatException(failure) }
         finally { plain.fill(0) }
@@ -159,15 +171,30 @@ class WindowsDeltaJournal(private val directory: Path, private val protector: Dp
     @Synchronized override fun save(edit: RecoveryEdit) {
         requireOwnership()
         check(load() == null) { "Pending operation already exists" }
+        writePending(edit)
+    }
+    /** Atomic in-place update of the same operation (autosave or submitted marker); never changes identity. */
+    @Synchronized override fun replace(edit: RecoveryEdit) {
+        requireOwnership()
+        val current = load() ?: error("No pending operation to replace")
+        check(current.metadata == edit.metadata) { "Replacement must keep the same operation identity" }
+        check(!current.submitted || edit.submitted) { "A submitted operation cannot return to staged" }
+        writePending(edit)
+    }
+    private fun writePending(edit: RecoveryEdit) {
         val instance = requireNotNull(edit.metadata.datasetInstance) { "Legacy identity requires explicit resolution" }
-        val fields = listOf(edit.metadata.device, instance, edit.metadata.operation, edit.syntheticDelta)
+        val fields = listOf(edit.metadata.device, instance, edit.metadata.operation)
         require(fields.all { it.isNotBlank() && it.toByteArray(Charsets.UTF_8).size <= 4096 })
+        val delta = edit.syntheticDelta.toByteArray(Charsets.UTF_8)
+        require(delta.size in 1..MAX_DELTA_BYTES)
         require(edit.metadata.baseRevision >= 0)
         val buffer = ByteArrayOutputStream()
-        DataOutputStream(buffer).use {
-            it.writeInt(0x45415032); it.writeUTF(edit.metadata.device); it.writeUTF(instance); it.writeLong(edit.metadata.baseRevision)
-            it.writeUTF(edit.metadata.operation); it.writeUTF(edit.syntheticDelta)
-        }
+        try {
+            DataOutputStream(buffer).use {
+                it.writeInt(0x45415033); it.writeUTF(edit.metadata.device); it.writeUTF(instance); it.writeLong(edit.metadata.baseRevision)
+                it.writeUTF(edit.metadata.operation); it.writeBoolean(edit.submitted); it.writeInt(delta.size); it.write(delta)
+            }
+        } finally { delta.fill(0) }
         writeProtected(file, buffer.toByteArray())
     }
     @Synchronized override fun revisionFloor(identity: DatasetIdentity): Long? {
@@ -248,7 +275,7 @@ class WindowsDeltaJournal(private val directory: Path, private val protector: Dp
         previewSources = captureSources()
         check(previewSources.isNotEmpty())
         return HistoryRecoveryPreview(HistoryRecoveryKind.QUARANTINE_ALL, null, null,
-            HistoryRecoveryConfirmation(), reason = reason).also { recoveryPreview = it }
+            HistoryRecoveryConfirmation(), reason = reason, guidance = recoveryGuidance(reason)).also { recoveryPreview = it }
     }
     @Synchronized override fun cancelHistoryRecovery(confirmation: HistoryRecoveryConfirmation) {
         requireOwnership()
@@ -443,7 +470,7 @@ class WindowsDeltaJournal(private val directory: Path, private val protector: Dp
         protector.requireAvailableEnvironment()
         check(fingerprint(file) == captured) { "Pending ciphertext changed during preview" }
         val reason = if (first == second) first else RecoveryFailureReason.MIXED
-        return PendingQuarantinePreview(captured.size, reason, PendingQuarantineConfirmation()).also {
+        return PendingQuarantinePreview(captured.size, reason, PendingQuarantineConfirmation(), guidance = recoveryGuidance(reason)).also {
             pendingQuarantinePreview = it; pendingFingerprint = captured
         }
     }
@@ -471,7 +498,12 @@ class WindowsDeltaJournal(private val directory: Path, private val protector: Dp
         return PendingQuarantineOutcome(PendingQuarantineResult.QUARANTINED, archiveId)
     }
     /** Export only retained ciphertext, no decryption/current-key requirement and no overwrite. */
-    @Synchronized fun exportPendingArchive(archiveId: String, destination: Path) {
+    /**
+     * V1: an ACL-capable destination (NTFS) is the default. A filesystem without ACLs (FAT32/exFAT removable media)
+     * is accepted only with [allowUnprotectedFilesystem] after the user explicitly chose it; the bytes stay DPAPI
+     * ciphertext that only the same Windows account with its original key can open (see [EXPORT_GUIDANCE]).
+     */
+    @Synchronized fun exportPendingArchive(archiveId: String, destination: Path, allowUnprotectedFilesystem: Boolean = false) {
         requireOwnership()
         require(Regex("pending-quarantine-[0-9a-f-]{36}\\.dpapi").matches(archiveId))
         UUID.fromString(archiveId.removePrefix("pending-quarantine-").removeSuffix(".dpapi"))
@@ -482,10 +514,13 @@ class WindowsDeltaJournal(private val directory: Path, private val protector: Dp
         check(parent != directory.toRealPath()) { "Export needs a separate existing local directory" }
         // Resolve existing directory aliases once; never follow a destination-file link.
         val target = parent.resolve(requested.fileName)
+        // The view object exists on every Windows volume; only the file store says whether ACLs are kept (not on FAT32/exFAT).
+        val aclCapable = Files.getFileStore(parent).supportsFileAttributeView(AclFileAttributeView::class.java)
+        if (!aclCapable && !allowUnprotectedFilesystem) throw UnprotectedExportDestinationException()
         var created = false
         try {
             FileChannel.open(target, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE, LinkOption.NOFOLLOW_LINKS).use { output ->
-                created = true; restrict(target)
+                created = true; if (aclCapable) restrict(target)
                 Files.newInputStream(source, LinkOption.NOFOLLOW_LINKS).use { input ->
                     val chunk = ByteArray(8192)
                     try {

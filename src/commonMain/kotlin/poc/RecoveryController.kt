@@ -5,7 +5,8 @@ import kotlin.jvm.JvmOverloads
 data class PendingEdit(val device: String, val baseRevision: Long, val operation: String,
     val datasetInstance: String? = null)
 
-data class RecoveryEdit(val metadata: PendingEdit, val syntheticDelta: String) {
+/** [submitted] is persisted before the edit is sent: a submitted edit is never edited again, only reconciled. */
+data class RecoveryEdit @JvmOverloads constructor(val metadata: PendingEdit, val syntheticDelta: String, val submitted: Boolean = false) {
     init {
         requireWellFormedUtf16(metadata.device)
         requireWellFormedUtf16(metadata.operation)
@@ -70,6 +71,8 @@ interface DeltaJournal {
     fun recordVerifiedEpoch(identity: DatasetIdentity, epoch: Long)
     /** Atomically retain both maxima before activating a grant. */
     fun recordVerifiedGrant(identity: DatasetIdentity, revision: Long, epoch: Long)
+    /** Replace the pending record of the same operation. Implementations should make this atomic. */
+    fun replace(edit: RecoveryEdit) { clear(); save(edit) }
 }
 
 /** Serialized calls only. Grants/receipts must already be authenticated by a future private channel. */
@@ -195,6 +198,37 @@ class RecoveryController @JvmOverloads constructor(private val journal: DeltaJou
             throw failure
         }
     }
+    /** The live grant, or null when editing is not currently permitted. */
+    val activeGrant: Grant? get() = if (canEdit()) gate.grant else null
+    /** Milliseconds until the conservative local deadline, or null without a live grant. */
+    fun leaseRemainingMillis(): Long? { val now = clock(); return if (canEditAt(now)) gate.deadlineAt - now else null }
+
+    /**
+     * Autosave: create the staged edit, or replace the text of the same not-yet-submitted operation.
+     * Requires a live grant and snapshot, exactly like [stage].
+     */
+    fun restage(operation: String, syntheticDelta: String) {
+        check(canEdit() && hasSnapshot)
+        val current = readJournal() ?: return stage(operation, syntheticDelta)
+        val grant = gate.grant!!
+        check(!current.submitted && current.metadata == PendingEdit(grant.device, grant.baseRevision, operation, grant.datasetInstance))
+        require(syntheticDelta.isNotEmpty())
+        try { journal.replace(current.copy(syntheticDelta = syntheticDelta)) }
+        catch (failure: Exception) { suspendSession(); throw failure }
+    }
+
+    /** Persist the submitted marker BEFORE the edit leaves the PC; afterwards only reconciliation may clear it. */
+    fun markSubmitted(): RecoveryEdit {
+        check(canEdit() && hasSnapshot)
+        val current = readJournal() ?: error("No pending edit")
+        val grant = gate.grant!!
+        check(current.metadata.baseRevision == grant.baseRevision && current.metadata.datasetInstance == grant.datasetInstance)
+        if (current.submitted) return current
+        val submitted = current.copy(submitted = true)
+        try { journal.replace(submitted) } catch (failure: Exception) { suspendSession(); throw failure }
+        return submitted
+    }
+
     /** Recovery remains a pending proposal. Never automatically replay it to the phone. */
     fun recoveryCandidate(device: String, revision: Long, datasetInstance: String): RecoveryEdit? {
         val edit = readJournal() ?: return null
