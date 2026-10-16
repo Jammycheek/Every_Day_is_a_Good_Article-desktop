@@ -55,10 +55,19 @@ internal object HelperProcess {
 /** Current USB/MTP phone selector from the existing polling probe; null unless exactly one ready device. */
 class WindowsTransport(helper: Path) {
     private val reader = WindowsTransportReader(helper)
+    private var state = TransportState.ERROR
+    val problem: String? get() = when (state) {
+        TransportState.USB_MTP_READY -> null
+        TransportState.NONE -> "USB/MTP機器が見つかりません。USB接続と「ファイル転送」を確認してください"
+        TransportState.AMBIGUOUS -> "USB/MTP機器が複数あります。検証するスマホを1台だけ接続してください"
+        TransportState.UNAVAILABLE -> "USB機器は見えていますが、MTPで開けません。ロック解除と「ファイル転送」を確認してください"
+        TransportState.ERROR -> "USB/MTPの接続確認に失敗しました。少し待って再試行してください"
+    }
     @Volatile var selector: String? = null
         private set
     fun sample(): Boolean {
         val observation = reader.sample()
+        state = observation.state
         selector = if (observation.state == TransportState.USB_MTP_READY) observation.localSelector else null
         return selector != null
     }
@@ -67,7 +76,7 @@ class WindowsTransport(helper: Path) {
 /** PC side of the mailbox over WPD/MTP. Only the helper's whitelisted mailbox commands are used. */
 class WpdMailbox(private val helper: Path, private val selector: () -> String?) : Mailbox {
     private val objectIds = HashMap<String, String>()
-    private fun device() = selector() ?: throw IllegalStateException("No USB/MTP phone")
+    private fun device() = selector() ?: throw IllegalStateException("USB/MTPの接続を確認できません。少し待って再試行してください")
 
     override fun send(name: String, bytes: ByteArray) {
         require(MailboxNames.isMessage(name))

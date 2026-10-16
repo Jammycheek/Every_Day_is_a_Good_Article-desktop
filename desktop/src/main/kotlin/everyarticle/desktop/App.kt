@@ -11,6 +11,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import everyarticle.desktop.sync.ClientView
+import everyarticle.desktop.sync.ConnectionStep
 import everyarticle.desktop.sync.CloseState
 import everyarticle.desktop.sync.PcSyncClient
 import everyarticle.desktop.sync.DecisionKind
@@ -28,10 +29,23 @@ fun App(controller: AppController) {
     val view by controller.view.collectAsState()
     val busy by controller.busy.collectAsState()
     val error by controller.error.collectAsState()
+    val connecting by controller.connecting.collectAsState()
     MaterialTheme {
         Surface(Modifier.fillMaxSize()) {
             Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 StatusBar(view, busy)
+                if (connecting) {
+                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                    Text(when (view.connectionStep) {
+                        ConnectionStep.CHECKING_USB -> "1/5 USB/MTPの接続を確認しています"
+                        ConnectionStep.CHECKING_PHONE -> "2/5 スマホの応答を待っています"
+                        ConnectionStep.CHECKING_PENDING -> "3/5 未反映の編集を照合しています"
+                        ConnectionStep.REQUESTING_PERMISSION -> "4/5 編集許可を確認しています"
+                        ConnectionStep.IMPORTING_ARTICLES -> "5/5 記事を取り込んでいます"
+                        null -> "接続の準備をしています"
+                    })
+                }
+                view.transportProblem?.let { Text(it) }
                 error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
                 view.message?.let { Text(it) }
                 UnsavedNotice(view, controller)
@@ -112,7 +126,7 @@ private fun PairingStorePanel(view: ClientView, controller: AppController) {
 @Composable
 private fun StatusBar(view: ClientView, busy: String?) {
     Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-        Text("USB/MTP: " + if (view.transportReady) "接続" else "未接続")
+        Text("USB/MTP: " + if (view.transportReady) "接続" else "接続未確認")
         Text("ペアリング: " + (view.paired?.displayName ?: "未"))
         Text("編集許可: " + (view.leaseRemainingMillis?.let { "残り ${it / 60_000}分${(it / 1000) % 60}秒" } ?: "なし"))
         view.pending?.let { Text(if (it.submitted) "未確定の提出あり" else "未提出の編集あり（暗号化保存済み）") }
@@ -144,10 +158,11 @@ private fun PairingPanel(view: ClientView, controller: AppController) {
 
 @Composable
 private fun SessionPanel(view: ClientView, controller: AppController) {
+    val connecting by controller.connecting.collectAsState()
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        if (!view.sessionActive) Button(enabled = view.transportReady, onClick = { controller.run("接続中") { connect() } }) { Text("接続して取り込む") }
-        else OutlinedButton(onClick = { controller.run("終了") { release() } }) { Text("編集を終えてスマホのロックを解除") }
-        OutlinedButton(onClick = { controller.run("解除") { forgetPairing() } }) { Text("このPCのペアリングを解除") }
+        if (!view.sessionActive) Button(enabled = view.transportReady && !connecting, onClick = controller::connect) { Text("接続して取り込む") }
+        else OutlinedButton(enabled = !connecting, onClick = { controller.run("終了") { release() } }) { Text("編集を終えてスマホのロックを解除") }
+        OutlinedButton(enabled = !connecting, onClick = { controller.run("解除") { forgetPairing() } }) { Text("このPCのペアリングを解除") }
     }
     if (!view.sessionActive) {
         view.pending?.let { PendingNotice(view, controller) }
@@ -204,6 +219,7 @@ private fun PendingNotice(view: ClientView, controller: AppController) {
 
 @Composable
 private fun DecisionPanel(view: ClientView, controller: AppController) {
+    val connecting by controller.connecting.collectAsState()
     var discardPreview by remember { mutableStateOf<PendingDiscardPreview?>(null) }
     var quarantinePreview by remember { mutableStateOf<PendingQuarantinePreview?>(null) }
     val decision = view.decision ?: return
@@ -212,7 +228,7 @@ private fun DecisionPanel(view: ClientView, controller: AppController) {
         Text(decisionExplanation(decision, view.decisionReason))
         view.pending?.let { Text("保護中の編集: 記事 ${it.articleId}「${it.title ?: "見出しなし"}」") }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(onClick = { controller.run("再照会") { connect() } }) { Text("もう一度照会する") }
+            OutlinedButton(enabled = !connecting, onClick = controller::connect) { Text("もう一度照会する") }
             if (decision == DecisionKind.UNREADABLE)
                 OutlinedButton(onClick = { controller.run("隔離の準備") { quarantinePreview = preparePendingQuarantine() } }) { Text("隔離の準備") }
             else {

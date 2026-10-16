@@ -18,16 +18,20 @@ class AppController(clientFactory: ((ClientView) -> Unit) -> PcSyncClient, priva
     private val mutableError = MutableStateFlow<String?>(null)
     private val mutableCloseState = MutableStateFlow(CloseState.OPEN)
     private val mutableInputFrozen = MutableStateFlow(false)
+    private val mutableConnecting = MutableStateFlow(false)
     val view: StateFlow<ClientView> = mutableView
     val busy: StateFlow<String?> = mutableBusy
     val error: StateFlow<String?> = mutableError
     val closeState: StateFlow<CloseState> = mutableCloseState
     /** True from the moment submit or close is requested until it has finished; the editor is read-only meanwhile. */
     val inputFrozen: StateFlow<Boolean> = mutableInputFrozen
+    val connecting: StateFlow<Boolean> = mutableConnecting
 
     private val worker = SyncWorker(clientFactory, onView = { mutableView.value = it }, onBusy = { mutableBusy.value = it },
         onError = { mutableError.value = it }, onCloseState = { mutableCloseState.value = it },
-        onInputFrozen = { mutableInputFrozen.value = it })
+        onInputFrozen = { mutableInputFrozen.value = it }, onConnecting = { mutableConnecting.value = it })
+
+    fun connect() = worker.connect()
 
     fun run(label: String, action: PcSyncClient.() -> Unit) = worker.run(label, action)
 

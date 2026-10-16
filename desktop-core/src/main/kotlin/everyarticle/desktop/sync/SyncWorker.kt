@@ -33,6 +33,7 @@ class SyncWorker(
     private val onError: (String?) -> Unit = {},
     private val onCloseState: (CloseState) -> Unit = {},
     private val onInputFrozen: (Boolean) -> Unit = {},
+    private val onConnecting: (Boolean) -> Unit = {},
     private val autosaveDelayMillis: Long = 700,
     tickPeriodMillis: Long = 1_000
 ) {
@@ -51,6 +52,7 @@ class SyncWorker(
     private var submitting = false
     /** The close task has released the phone; until then no other task may declare the close READY. */
     private var closeReleased = false
+    private var connecting = false
 
     init {
         worker.execute {
@@ -87,6 +89,24 @@ class SyncWorker(
         worker.execute {
             onBusy(label); onError(null)
             try { flush(); client.action() } catch (t: Throwable) { onError(describe(t)) } finally { onBusy(null) }
+            settleIfClosing()
+        }
+    }
+
+    /** Claim the request on the caller's thread, before the worker can be delayed by earlier work. */
+    fun connect() {
+        synchronized(lock) {
+            if (connecting || closeState != CloseState.OPEN) return
+            connecting = true
+            onConnecting(true)
+        }
+        worker.execute {
+            onBusy("接続中"); onError(null)
+            try { flush(); client.connect() } catch (t: Throwable) { onError(describe(t)) }
+            finally {
+                synchronized(lock) { connecting = false; onConnecting(false) }
+                onBusy(null)
+            }
             settleIfClosing()
         }
     }

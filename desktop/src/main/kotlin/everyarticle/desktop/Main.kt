@@ -66,7 +66,8 @@ private fun windowsController(): AppController {
     val mailbox = WpdMailbox(helper) { transport.selector }
     val pcName = System.getenv("COMPUTERNAME") ?: "Windows PC"
     return AppController({ onChange ->
-        PcSyncClient(pcName, mailbox, peers, RecoveryController(journal), transportReady = { transport.sample() }, onChange = onChange)
+        PcSyncClient(pcName, mailbox, peers, RecoveryController(journal), transportReady = { transport.sample() },
+            transportProblem = { transport.problem }, onChange = onChange)
     }, onClose = { journal.close() })
 }
 

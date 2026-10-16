@@ -32,10 +32,11 @@ class RoundTripTest {
     private var pcPolls = true
 
     private fun endpoint() = PhoneEndpoint("phone-1", "合成スマホ", phoneMailbox, phonePeers, InMemoryReplayGuard(), authority, phoneClock)
-    private fun client() = PcSyncClient("合成PC", DirectoryMailbox.forPc(root), pcPeers, RecoveryController(journal) { pcClock },
+    private fun client(mailbox: Mailbox = DirectoryMailbox.forPc(root), onChange: (ClientView) -> Unit = {}) =
+        PcSyncClient("合成PC", mailbox, pcPeers, RecoveryController(journal) { pcClock },
         transportReady = { transport }, wallMillis = { phoneClock.wall },
         sleep = { ms -> pcClock += ms; phoneClock.advance(ms); if (pcPolls) phone.poll() }, replyTimeoutMillis = 2_000,
-        sessionMillis = 120_000, safetyAllowanceMillis = 5_000)
+        sessionMillis = 120_000, safetyAllowanceMillis = 5_000, elapsedMillis = { pcClock }, onChange = onChange)
     private var pc = client()
 
     private fun advance(ms: Long) { pcClock += ms; phoneClock.advance(ms) }
@@ -70,6 +71,120 @@ class RoundTripTest {
         phone.poll() // release message
         gate.localWrite { } // phone unlocked
         assertEquals(1, store.operationCount())
+    }
+
+    @Test fun slowReceiveCountsAgainstTheReplyBudgetAndKeepsLateReply() {
+        val inner = DirectoryMailbox.forPc(root)
+        var slow = true
+        var deletes = 0
+        pc = client(object : Mailbox by inner {
+            override fun receive(): List<MailboxFile> {
+                if (slow) { slow = false; advance(2_000); phone.poll() }
+                return inner.receive()
+            }
+            override fun delete(name: String) { deletes++; inner.delete(name) }
+        })
+        assertFailsWith<SyncTimeoutException> { pc.connect() }
+        assertEquals(0, deletes, "a reply completing exactly at the deadline is not consumed")
+        assertFalse(pc.view.sessionActive); assertNull(pc.view.connectionStep)
+        pc.connect() // the old reply is ignored, then a fresh request completes
+        assertTrue(pc.view.sessionActive)
+    }
+
+    @Test fun slowSendIsIncludedBeforePollingForTheReply() {
+        val inner = DirectoryMailbox.forPc(root)
+        var slow = true
+        var receives = 0
+        pc = client(object : Mailbox by inner {
+            override fun send(name: String, bytes: ByteArray) {
+                inner.send(name, bytes)
+                if (slow) { slow = false; advance(2_100); phone.poll() }
+            }
+            override fun receive(): List<MailboxFile> { receives++; return inner.receive() }
+        })
+        assertFailsWith<SyncTimeoutException> { pc.connect() }
+        assertEquals(0, receives)
+        assertNull(pc.view.connectionStep)
+    }
+
+    @Test fun slowEmptyPollsDoNotMultiplyTheConfiguredWait() {
+        val inner = DirectoryMailbox.forPc(root)
+        var receives = 0
+        pcPolls = false
+        pc = client(object : Mailbox by inner {
+            override fun receive(): List<MailboxFile> { receives++; advance(800); return emptyList() }
+        })
+        val start = pcClock
+        assertFailsWith<SyncTimeoutException> { pc.connect() }
+        assertEquals(2_000, pcClock - start)
+        assertEquals(2, receives)
+    }
+
+    @Test fun slowReplyDeletionAlsoCountsAgainstTheBudget() {
+        val inner = DirectoryMailbox.forPc(root)
+        var slow = true
+        pc = client(object : Mailbox by inner {
+            override fun delete(name: String) {
+                inner.delete(name)
+                if (slow) { slow = false; advance(2_100) }
+            }
+        })
+        assertFailsWith<SyncTimeoutException> { pc.connect() }
+        assertFalse(pc.view.sessionActive); assertNull(pc.view.connectionStep)
+        pc.connect()
+        assertTrue(pc.view.sessionActive)
+    }
+
+    @Test fun openingThePhoneScreenDuringTheBudgetCanStillComplete() {
+        val inner = DirectoryMailbox.forPc(root)
+        pcPolls = false
+        val start = pcClock
+        pc = client(object : Mailbox by inner {
+            override fun receive(): List<MailboxFile> {
+                if (pcClock - start >= 750) phone.poll()
+                return inner.receive()
+            }
+        })
+        pc.connect()
+        assertTrue(pc.view.sessionActive)
+    }
+
+    @Test fun connectionPublishesEachStageAndClearsItAfterCompletion() {
+        val stages = mutableListOf<ConnectionStep>()
+        pc = client(onChange = { it.connectionStep?.let(stages::add) })
+        pc.connect()
+        assertEquals(ConnectionStep.entries.toList(), stages.distinct())
+        assertNull(pc.view.connectionStep)
+    }
+
+    @Test fun unavailableTransportNeverSendsAndKeepsProtectedText() {
+        pc.connect(); pc.saveDraft(1, "見出し", "保護して残す"); pc.release(); phone.poll()
+        val inner = DirectoryMailbox.forPc(root)
+        var sends = 0
+        pc = client(object : Mailbox by inner {
+            override fun send(name: String, bytes: ByteArray) { sends++; inner.send(name, bytes) }
+        })
+        transport = false
+        val failure = assertFailsWith<IllegalStateException> { pc.connect() }
+        assertTrue(failure.message!!.contains("USB/MTP")); assertEquals(0, sends)
+        assertNotNull(pc.view.transportProblem); assertNull(pc.view.connectionStep)
+        assertEquals("保護して残す", journalBody())
+    }
+
+    @Test fun snapshotTimeoutReleasesTheGrantSoConnectingCanBeRetried() {
+        val inner = DirectoryMailbox.forPc(root)
+        var hideSnapshot = true
+        pc = client(object : Mailbox by inner {
+            override fun receive(): List<MailboxFile> = inner.receive().filterNot { file ->
+                hideSnapshot && Envelope.open(file.bytes, pcPeers.pcId, Role.PHONE) { pcPeers.peer() }.message is SyncMessage.Snapshot
+            }
+        })
+        assertFailsWith<SyncTimeoutException> { pc.connect() }
+        assertFalse(pc.view.sessionActive); assertNull(pc.view.connectionStep)
+        hideSnapshot = false
+        pc.connect()
+        assertTrue(pc.view.sessionActive)
+        assertEquals(0, store.operationCount())
     }
 
     @Test fun lostReplyAfterApplyIsResolvedByQueryWithoutDoubleApply() {
@@ -202,6 +317,7 @@ class RoundTripTest {
     private var workerView = ClientView()
     private var closeState = CloseState.OPEN
     private val frozenLog = java.util.Collections.synchronizedList(mutableListOf<Boolean>())
+    private val connectingLog = java.util.Collections.synchronizedList(mutableListOf<Boolean>())
     /** Runs on the worker thread: simulates the user typing while a worker task is in progress. */
     private var whileWorking: ((ClientView) -> Unit)? = null
     private var whilePolling: (() -> Unit)? = null
@@ -209,9 +325,21 @@ class RoundTripTest {
         PcSyncClient("合成PC", DirectoryMailbox.forPc(root), pcPeers, RecoveryController(journal) { pcClock },
             transportReady = { transport }, wallMillis = { phoneClock.wall },
             sleep = { ms -> pcClock += ms; phoneClock.advance(ms); whilePolling?.invoke(); if (pcPolls) phone.poll() },
-            replyTimeoutMillis = 2_000, sessionMillis = 120_000, safetyAllowanceMillis = 5_000, onChange = onChange)
+            replyTimeoutMillis = 2_000, sessionMillis = 120_000, safetyAllowanceMillis = 5_000,
+            elapsedMillis = { pcClock }, onChange = onChange)
     }, onView = { workerView = it; whileWorking?.invoke(it) }, onCloseState = { closeState = it },
-        onInputFrozen = { frozenLog += it }, autosaveDelayMillis = 600_000, tickPeriodMillis = 0)
+        onInputFrozen = { frozenLog += it }, onConnecting = { connectingLog += it }, autosaveDelayMillis = 600_000, tickPeriodMillis = 0)
+
+    @Test fun duplicateConnectWhileWaitingIsIgnoredBeforeItCanBeQueued() {
+        val w = worker()
+        var triedAgain = false
+        whilePolling = { if (!triedAgain) { triedAgain = true; w.connect() } }
+        try {
+            w.connect(); w.awaitIdle()
+            assertTrue(triedAgain); assertTrue(workerView.sessionActive)
+            assertEquals(listOf(true, false), connectingLog.toList())
+        } finally { w.shutdown() }
+    }
 
     private fun journalBody() = EditPayload.decode(journal.edit!!.syntheticDelta).body
 
@@ -438,7 +566,7 @@ class RoundTripTest {
         val restarted = PcSyncClient("合成PC", DirectoryMailbox.forPc(root), pairingStore, RecoveryController(journal) { pcClock },
             transportReady = { transport }, wallMillis = { phoneClock.wall },
             sleep = { ms -> pcClock += ms; phoneClock.advance(ms); phone.poll() }, replyTimeoutMillis = 2_000,
-            sessionMillis = 120_000, safetyAllowanceMillis = 5_000)
+            sessionMillis = 120_000, safetyAllowanceMillis = 5_000, elapsedMillis = { pcClock })
         restarted.initialize() // must not throw
         assertEquals(PairingStoreProblem.TRANSIENT, restarted.view.pairingStoreProblem)
         assertEquals("ペアリング情報が壊れる前の編集", restarted.view.pending?.body, "pending edit still visible")

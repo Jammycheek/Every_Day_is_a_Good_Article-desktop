@@ -55,6 +55,8 @@ class InMemoryPcPeerStore(override val pcId: String = "pc-" + SyncCrypto.randomH
 /** What the user must decide about a pending edit before editing can continue. */
 enum class DecisionKind { CONFLICT, REJECTED, UNKNOWN, UNREADABLE }
 
+enum class ConnectionStep { CHECKING_USB, CHECKING_PHONE, CHECKING_PENDING, REQUESTING_PERMISSION, IMPORTING_ARTICLES }
+
 data class PendingSummary(val articleId: Long, val title: String?, val body: String, val submitted: Boolean,
     val baseRevision: Long, val incarnation: String?)
 
@@ -73,6 +75,8 @@ data class ClientView(
     val pairingConfirmedLocally: Boolean = false,
     val pairingInProgress: Boolean = false,
     val transportReady: Boolean = false,
+    val transportProblem: String? = null,
+    val connectionStep: ConnectionStep? = null,
     val phoneRevision: Long? = null,
     val sessionActive: Boolean = false,
     val leaseRemainingMillis: Long? = null,
@@ -105,6 +109,8 @@ class PcSyncClient(
     private val replyTimeoutMillis: Long = 20_000,
     private val sessionMillis: Long = 5 * 60_000,
     private val safetyAllowanceMillis: Long = 15_000,
+    private val elapsedMillis: () -> Long = { System.nanoTime() / 1_000_000 },
+    private val transportProblem: () -> String? = { null },
     private val onChange: (ClientView) -> Unit = {}
 ) {
     var view = ClientView(paired = peers.peer())
@@ -189,20 +195,28 @@ class PcSyncClient(
     }
 
     /** Wait for the reply carrying [nonce]. Other authenticated replies are stale and ignored. */
-    private fun await(nonce: String): SyncMessage {
+    private fun await(nonce: String, startedAt: Long): SyncMessage {
         val peer = peer()
-        var waited = 0L
-        while (waited <= replyTimeoutMillis) {
-            for (file in mailbox.receive()) {
+        fun remaining(): Long {
+            val elapsed = elapsedMillis() - startedAt
+            if (elapsed < 0 || elapsed >= replyTimeoutMillis) throw SyncTimeoutException()
+            return replyTimeoutMillis - elapsed
+        }
+        while (true) {
+            remaining()
+            val files = mailbox.receive()
+            remaining() // Include native/MTP time; a slow receive must not restart the wait budget.
+            for (file in files) {
+                remaining()
                 val opened = try { Envelope.open(file.bytes, peers.pcId, Role.PHONE) { if (it == peer.peerId) peer else null } }
                     catch (_: ProtocolFormatException) { continue } // may still be in transfer; phone side never writes partial names
                 mailbox.delete(file.name)
+                remaining()
                 if (!opened.authenticated) continue
                 if (replyNonce(opened.message) == nonce) return opened.message
             }
-            sleep(250); waited += 250
+            sleep(minOf(250, remaining()))
         }
-        throw SyncTimeoutException()
     }
 
     private fun replyNonce(m: SyncMessage): String? = when (m) {
@@ -216,8 +230,9 @@ class PcSyncClient(
 
     private fun request(build: (String) -> SyncMessage): SyncMessage {
         val nonce = SyncCrypto.randomHex(16)
+        val startedAt = elapsedMillis()
         send(build(nonce))
-        return await(nonce)
+        return await(nonce, startedAt)
     }
 
     // ---------------- connection lifecycle ----------------
@@ -225,14 +240,16 @@ class PcSyncClient(
     /** Periodic: transport, lease expiry and renewal. Releases the snapshot as soon as permission ends. */
     fun tick() {
         val ready = try { transportReady() } catch (_: Exception) { false }
-        if (ready != view.transportReady) update { copy(transportReady = ready) }
+        val problem = if (ready) null else transportProblem() ?: "USB/MTPの接続を確認できません。ファイル転送とロック解除を確認して、再試行してください"
+        if (ready != view.transportReady || problem != view.transportProblem)
+            update { copy(transportReady = ready, transportProblem = problem) }
         controller.observeTransport(ready)
         controller.tick()
         val remaining = controller.leaseRemainingMillis()
         if (remaining == null && session != null) {
             session = null
             update { copy(sessionActive = false, leaseRemainingMillis = null, articles = emptyList(),
-                message = if (ready) "編集許可の期限が切れました。未反映の編集は保護されています" else "接続が切れました。未反映の編集は保護されています") }
+                message = if (ready) "編集許可の期限が切れました。未反映の編集は保護されています" else "USB/MTPの接続を確認できなくなりました。未反映の編集は保護されています") }
         } else if (remaining != null) {
             update { copy(leaseRemainingMillis = remaining) }
             if (remaining < validityMillis / 3) renew()
@@ -245,9 +262,24 @@ class PcSyncClient(
      */
     fun connect() {
         checkPairingStore()
+        update { copy(connectionStep = ConnectionStep.CHECKING_USB) }
+        try {
+            connectInternal()
+        } catch (failure: Exception) {
+            release() // A grant followed by a failed snapshot must not strand the next connection attempt.
+            throw failure
+        } finally {
+            update { copy(connectionStep = null) }
+        }
+    }
+
+    private fun connectInternal() {
         tick()
+        check(view.transportReady) { view.transportProblem ?: "USB/MTPの接続を確認できません" }
+        update { copy(connectionStep = ConnectionStep.CHECKING_PHONE, message = "スマホの「PCと連携」を開いたままお待ちください") }
         val status = request { SyncMessage.StatusRequest(it) } as? SyncMessage.StatusReport ?: error("Unexpected reply")
-        update { copy(phoneRevision = status.revision, decision = null, decisionReason = null, resubmitAllowed = false, message = null) }
+        update { copy(phoneRevision = status.revision, decision = null, decisionReason = null, resubmitAllowed = false, message = null,
+            connectionStep = ConnectionStep.CHECKING_PENDING) }
         val pending = try { controller.pending } catch (failure: Exception) {
             update { copy(decision = DecisionKind.UNREADABLE, message = "保護された未反映の編集を読み取れません") }
             return
@@ -304,12 +336,14 @@ class PcSyncClient(
     }
 
     private fun acquire(status: SyncMessage.StatusReport) {
+        update { copy(connectionStep = ConnectionStep.REQUESTING_PERMISSION) }
         val p = peer()
         val identity = DatasetIdentity(p.peerId, status.datasetIncarnation)
         val rebaseline = try { controller.revisionHistoryNeedsBaseline(identity) } catch (_: IllegalStateException) { false }
         val pendingRequest = controller.beginGrantRequest(identity, sessionMillis, safetyAllowanceMillis, renewal = false, rebaseline = rebaseline)
+        val startedAt = elapsedMillis()
         send(SyncMessage.SessionRequest(pendingRequest.requestNonce, SessionMode.ACQUIRE, status.datasetIncarnation, null, null, sessionMillis))
-        val reply = try { await(pendingRequest.requestNonce) } catch (t: SyncTimeoutException) { controller.cancelGrantRequest(pendingRequest); throw t }
+        val reply = try { await(pendingRequest.requestNonce, startedAt) } catch (t: SyncTimeoutException) { controller.cancelGrantRequest(pendingRequest); throw t }
         if (reply is SyncMessage.SessionRefused) {
             controller.cancelGrantRequest(pendingRequest)
             update { copy(message = refusalMessage(reply.reason)) }; return
@@ -321,6 +355,7 @@ class PcSyncClient(
         val accepted = if (rebaseline) controller.acceptFreshHistoryBaseline(local, pendingRequest) else controller.acceptGrant(local, pendingRequest)
         check(accepted == GrantAcceptanceResult.ACCEPTED)
         session = grant; lastGrant = grant; validityMillis = grant.validityMillis
+        update { copy(connectionStep = ConnectionStep.IMPORTING_ARTICLES) }
         val snapshot = request { SyncMessage.SnapshotRequest(it, grant.sessionId, grant.epoch) }
         if (snapshot !is SyncMessage.Snapshot || snapshot.sessionId != grant.sessionId || snapshot.epoch != grant.epoch ||
             snapshot.revision != grant.baseRevision || snapshot.datasetIncarnation != grant.datasetIncarnation) {
@@ -358,8 +393,9 @@ class PcSyncClient(
         val identity = DatasetIdentity(p.peerId, s.datasetIncarnation)
         val pendingRequest = try { controller.beginGrantRequest(identity, sessionMillis, safetyAllowanceMillis, renewal = true) }
             catch (_: Exception) { return }
+        val startedAt = elapsedMillis()
         send(SyncMessage.SessionRequest(pendingRequest.requestNonce, SessionMode.RENEW, s.datasetIncarnation, s.sessionId, s.epoch, sessionMillis))
-        val reply = try { await(pendingRequest.requestNonce) } catch (_: SyncTimeoutException) { controller.cancelGrantRequest(pendingRequest); return }
+        val reply = try { await(pendingRequest.requestNonce, startedAt) } catch (_: SyncTimeoutException) { controller.cancelGrantRequest(pendingRequest); return }
         if (reply !is SyncMessage.SessionGrant) { controller.cancelGrantRequest(pendingRequest); return }
         val local = Grant(reply.appIdentity, reply.sessionId, reply.baseRevision, reply.validityMillis, reply.datasetIncarnation, reply.requestNonce, reply.epoch)
         try { controller.acceptGrant(local, pendingRequest) } catch (_: Exception) {
