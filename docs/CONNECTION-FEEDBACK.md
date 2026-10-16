@@ -71,3 +71,31 @@ all four slow-I/O tests failed. The fixed source was restored and the full suite
 
 Real-hardware retry with this change is still required. The earlier 126 root recovery tests and native helper
 were unchanged; their earlier successful execution is not represented as a fresh run for this change.
+
+## Follow-up: property retrieval isolated (2026-10-16)
+
+The user retried three times and still saw an ERROR probe. No further click retries were requested. Diagnostic
+stage tracing corrected the earlier assumption about `Open`: `Open` and `Content` completed, and a 12-second
+diagnostic window expired while retrieving device properties. The shared property reader used `GetValues` with a
+NULL key collection, requesting every attribute. [Microsoft's API contract](https://learn.microsoft.com/en-us/windows/win32/api/portabledeviceapi/nf-portabledeviceapi-iportabledeviceproperties-getvalues)
+confirms that NULL requests all attributes.
+
+All WPD property calls now pass nonempty, explicit key collections. The connection probe retrieves transport and
+protocol together once; mailbox traversal requests only the names, types, parents or sizes it needs. Missing or
+unsupported required attributes still fail closed, and USB ancestry, USB declaration and MTP evidence remain
+mandatory. No selector is reused after a failed probe.
+
+Without another USB reset, the selective-property native probe completed in 98 ms and the application's Java
+reader returned READY three times (219, 112, 118 ms). Native CTest 2/2 passed. Optional diagnostic stages contain
+only fixed labels and process IDs, with no device IDs or message content. Set EVERYARTICLE_PROBE_TRACE=1 and
+optionally EVERYARTICLE_PROBE_TRACE_FILE to a local path; production launches leave these unset.
+
+Full read-only import validation then passed the transport check but timed out in the first authenticated status
+request's native stream Write. No edit was submitted. A temporary-name publishing prototype did not resolve that
+write stall and was removed; existing wire and publish behavior remain unchanged. Some failed synthetic message
+objects or ignored .part objects may remain from diagnostics. No user file was deleted.
+
+The app remains normally closed, with its pending edit protected. A fresh USB reset with **only** the selective
+property helper installed is the next controlled comparison. Do not mark the full import or user-visible recovery
+as passed from the probe-only results. The broader native property change is not covered by the earlier JVM run;
+its actual mailbox/stream validation remains pending.

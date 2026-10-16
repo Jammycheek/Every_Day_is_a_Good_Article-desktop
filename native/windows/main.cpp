@@ -15,8 +15,25 @@
 #include <chrono>
 #include <algorithm>
 #include <sstream>
+#include <initializer_list>
+#include <cstdio>
 using Microsoft::WRL::ComPtr;
 constexpr size_t MAX_BYTES = 65536;
+// Opt-in local diagnostics: fixed stage names only; never selectors, keys, or file contents.
+bool probeTracing = false;
+void probeStage(const char* stage) {
+    if (!probeTracing) return;
+    std::cerr << "probe-stage=" << stage << "\n" << std::flush;
+    WCHAR path[32768] = {};
+    DWORD size = GetEnvironmentVariableW(L"EVERYARTICLE_PROBE_TRACE_FILE", path, 32768);
+    if (size && size < 32768) {
+        FILE* file = nullptr;
+        if (_wfopen_s(&file, path, L"ab") == 0 && file) {
+            fprintf(file, "pid=%lu stage=%s\n", GetCurrentProcessId(), stage);
+            fclose(file);
+        }
+    }
+}
 // Wide console output, UTF-8 when redirected. Do not depend on the user's code page.
 struct LocalOutput {
     std::wostringstream buffer;
@@ -50,11 +67,19 @@ struct Text {
 std::wstring text(IPortableDeviceValues* values, REFPROPERTYKEY key) {
     Text result; checked(values->GetStringValue(key, &result.value)); return result.str();
 }
-ComPtr<IPortableDeviceValues> properties(IPortableDeviceContent* content, PCWSTR id) {
+ComPtr<IPortableDeviceValues> properties(IPortableDeviceContent* content, PCWSTR id,
+    std::initializer_list<PROPERTYKEY> requested) {
+    if (requested.size() == 0) throw std::runtime_error("Explicit property keys required");
+    auto keys = make<IPortableDeviceKeyCollection>(CLSID_PortableDeviceKeyCollection);
+    for (const auto& key : requested) checked(keys->Add(key));
     ComPtr<IPortableDeviceProperties> props;
+    probeStage("get-properties-interface");
     checked(content->Properties(&props));
     ComPtr<IPortableDeviceValues> values;
-    checked(props->GetValues(id, nullptr, &values));
+    // NULL requests every supported attribute, which can block even the connection probe.
+    probeStage("get-explicit-values");
+    checked(props->GetValues(id, keys.Get(), &values));
+    probeStage("values-read");
     return values;
 }
 bool usbAncestor(const std::wstring& id) {
@@ -85,28 +110,36 @@ struct Device {
     ComPtr<IPortableDevice> device;
     ComPtr<IPortableDeviceContent> content;
     explicit Device(PCWSTR id, bool writable) {
+        probeStage("create-device");
         device = make<IPortableDevice>(CLSID_PortableDeviceFTM);
+        probeStage("create-client-info");
         auto client = make<IPortableDeviceValues>(CLSID_PortableDeviceValues);
         checked(client->SetStringValue(WPD_CLIENT_NAME, L"EveryArticle Synthetic Probe"));
         checked(client->SetUnsignedIntegerValue(WPD_CLIENT_MAJOR_VERSION, 0));
         checked(client->SetUnsignedIntegerValue(WPD_CLIENT_MINOR_VERSION, 1));
         checked(client->SetUnsignedIntegerValue(WPD_CLIENT_REVISION, 0));
         checked(client->SetUnsignedIntegerValue(WPD_CLIENT_DESIRED_ACCESS, writable ? GENERIC_READ | GENERIC_WRITE : GENERIC_READ));
+        probeStage("open-device");
         checked(device->Open(id, client.Get()));
+        probeStage("open-content");
         checked(device->Content(&content));
+        probeStage("content-opened");
     }
-    ~Device() { if (device) device->Close(); }
+    ~Device() { if (device) { probeStage("close-device"); device->Close(); probeStage("device-closed"); } }
     Device(const Device&) = delete;
     Device& operator=(const Device&) = delete;
 };
 bool declaredUsb(IPortableDeviceContent* content) {
-    auto values = properties(content, WPD_DEVICE_OBJECT_ID);
+    auto values = properties(content, WPD_DEVICE_OBJECT_ID, {WPD_DEVICE_TRANSPORT});
     ULONG transport = 0;
     return SUCCEEDED(values->GetUnsignedIntegerValue(WPD_DEVICE_TRANSPORT, &transport)) && transport == WPD_DEVICE_TRANSPORT_USB;
 }
 void devices() {
+    probeStage("create-device-manager");
     auto manager = make<IPortableDeviceManager>(CLSID_PortableDeviceManager);
+    probeStage("refresh-device-list");
     checked(manager->RefreshDeviceList());
+    probeStage("enumerate-devices");
     DWORD count = 0;
     checked(manager->GetDevices(nullptr, &count));
     if (count > 256) throw std::runtime_error("Too many devices");
@@ -123,8 +156,11 @@ void devices() {
         LocalOutput() << L"device-id=" << id << L"\nusb-pnp-ancestor=" << usbAncestor(id) << L"\n";
         try {
             Device d(id.c_str(), false);
-            auto props = properties(d.content.Get(), WPD_DEVICE_OBJECT_ID);
-            LocalOutput() << L"wpd-open=1\nusb-declared=" << declaredUsb(d.content.Get()) << L"\n";
+            probeStage("read-device-properties");
+            auto props = properties(d.content.Get(), WPD_DEVICE_OBJECT_ID, {WPD_DEVICE_TRANSPORT, WPD_DEVICE_PROTOCOL});
+            ULONG transport = 0;
+            bool usb = SUCCEEDED(props->GetUnsignedIntegerValue(WPD_DEVICE_TRANSPORT, &transport)) && transport == WPD_DEVICE_TRANSPORT_USB;
+            LocalOutput() << L"wpd-open=1\nusb-declared=" << usb << L"\n";
             Text protocol;
             if (SUCCEEDED(props->GetStringValue(WPD_DEVICE_PROTOCOL, &protocol.value)))
                 LocalOutput() << L"reported-protocol=" << protocol.str() << L"\n";
@@ -141,7 +177,7 @@ void children(IPortableDeviceContent* content, PCWSTR parent) {
         Text id; ULONG fetched = 0;
         checked(objects->Next(1, &id.value, &fetched));
         if (!fetched) return;
-        auto props = properties(content, id.value);
+        auto props = properties(content, id.value, {WPD_OBJECT_CONTENT_TYPE, WPD_OBJECT_NAME});
         GUID type = {};
         checked(props->GetGuidValue(WPD_OBJECT_CONTENT_TYPE, &type));
         LocalOutput() << L"object-id=" << id.str() << L"\nname=" << text(props.Get(), WPD_OBJECT_NAME)
@@ -192,7 +228,7 @@ std::wstring sha256(const std::vector<unsigned char>& bytes) {
 void roundtrip(PCWSTR id, PCWSTR parent, bool empty, bool slow = false) {
     Device d(id, true);
     if (!declaredUsb(d.content.Get()) || !usbAncestor(id)) throw std::runtime_error("USB evidence is incomplete");
-    auto folder = properties(d.content.Get(), parent);
+    auto folder = properties(d.content.Get(), parent, {WPD_OBJECT_CONTENT_TYPE, WPD_OBJECT_NAME});
     GUID type = {};
     checked(folder->GetGuidValue(WPD_OBJECT_CONTENT_TYPE, &type));
     if (!IsEqualGUID(type, WPD_CONTENT_TYPE_FOLDER) || text(folder.Get(), WPD_OBJECT_NAME) != L"EveryArticle-PoC")
@@ -249,10 +285,12 @@ bool mailboxName(const std::wstring& name) {
 bool mailboxFolder(const std::wstring& name) { return name == L"to-pc" || name == L"to-phone"; }
 std::vector<std::wstring> childIds(IPortableDeviceContent* content, PCWSTR parent, size_t limit) {
     ComPtr<IEnumPortableDeviceObjectIDs> objects;
+    probeStage("enumerate-children");
     checked(content->EnumObjects(0, parent, nullptr, &objects));
     std::vector<std::wstring> ids;
     for (;;) {
         Text id; ULONG fetched = 0;
+        probeStage("read-next-child");
         checked(objects->Next(1, &id.value, &fetched));
         if (!fetched) return ids;
         if (ids.size() >= limit) throw std::runtime_error("Mailbox listing limit reached");
@@ -270,10 +308,10 @@ std::wstring mailboxFolderId(IPortableDeviceContent* content, const std::wstring
     std::vector<std::wstring> matches;
     for (auto& storage : childIds(content, WPD_DEVICE_OBJECT_ID, 64)) {
         for (auto& rootChild : childIds(content, storage.c_str(), 4096)) {
-            auto rootProps = properties(content, rootChild.c_str());
+            auto rootProps = properties(content, rootChild.c_str(), {WPD_OBJECT_CONTENT_TYPE, WPD_OBJECT_NAME});
             if (!isFolder(rootProps.Get()) || text(rootProps.Get(), WPD_OBJECT_NAME) != MAILBOX_ROOT) continue;
             for (auto& boxChild : childIds(content, rootChild.c_str(), 64)) {
-                auto boxProps = properties(content, boxChild.c_str());
+                auto boxProps = properties(content, boxChild.c_str(), {WPD_OBJECT_CONTENT_TYPE, WPD_OBJECT_NAME});
                 if (isFolder(boxProps.Get()) && text(boxProps.Get(), WPD_OBJECT_NAME) == box) matches.push_back(boxChild);
             }
         }
@@ -283,11 +321,11 @@ std::wstring mailboxFolderId(IPortableDeviceContent* content, const std::wstring
 }
 // An object may be read/deleted only if it is a mailbox file directly inside a mailbox folder below EveryArticleSync.
 void requireMailboxObject(IPortableDeviceContent* content, PCWSTR id) {
-    auto props = properties(content, id);
+    auto props = properties(content, id, {WPD_OBJECT_CONTENT_TYPE, WPD_OBJECT_NAME, WPD_OBJECT_PARENT_ID});
     if (isFolder(props.Get()) || !mailboxName(text(props.Get(), WPD_OBJECT_NAME))) throw std::runtime_error("Not a mailbox file");
-    auto parent = properties(content, text(props.Get(), WPD_OBJECT_PARENT_ID).c_str());
+    auto parent = properties(content, text(props.Get(), WPD_OBJECT_PARENT_ID).c_str(), {WPD_OBJECT_NAME, WPD_OBJECT_PARENT_ID});
     if (!mailboxFolder(text(parent.Get(), WPD_OBJECT_NAME))) throw std::runtime_error("Not in a mailbox folder");
-    auto grandparent = properties(content, text(parent.Get(), WPD_OBJECT_PARENT_ID).c_str());
+    auto grandparent = properties(content, text(parent.Get(), WPD_OBJECT_PARENT_ID).c_str(), {WPD_OBJECT_NAME});
     if (text(grandparent.Get(), WPD_OBJECT_NAME) != MAILBOX_ROOT) throw std::runtime_error("Not below EveryArticleSync");
 }
 void requireUsbMailbox(PCWSTR id, Device& d) {
@@ -308,7 +346,7 @@ void mailboxList(PCWSTR deviceId, const std::wstring& box) {
     requireUsbMailbox(deviceId, d);
     auto folder = mailboxFolderId(d.content.Get(), box);
     for (auto& id : childIds(d.content.Get(), folder.c_str(), 512)) {
-        auto props = properties(d.content.Get(), id.c_str());
+        auto props = properties(d.content.Get(), id.c_str(), {WPD_OBJECT_CONTENT_TYPE, WPD_OBJECT_NAME, WPD_OBJECT_SIZE});
         if (isFolder(props.Get())) continue;
         auto name = text(props.Get(), WPD_OBJECT_NAME);
         if (!mailboxName(name)) continue;
@@ -341,6 +379,7 @@ void mailboxWrite(PCWSTR deviceId, const std::wstring& box, const std::wstring& 
     if (!mailboxName(name)) throw std::runtime_error("Invalid mailbox file name");
     std::vector<unsigned char> bytes;
     unsigned char chunk[65536];
+    probeStage("read-mailbox-input");
     for (;;) {
         DWORD count = 0;
         if (!ReadFile(GetStdHandle(STD_INPUT_HANDLE), chunk, sizeof(chunk), &count, nullptr)) {
@@ -352,8 +391,10 @@ void mailboxWrite(PCWSTR deviceId, const std::wstring& box, const std::wstring& 
         bytes.insert(bytes.end(), chunk, chunk + count);
     }
     if (bytes.empty()) throw std::runtime_error("Mailbox input missing");
+    probeStage("mailbox-input-complete");
     Device d(deviceId, true);
     requireUsbMailbox(deviceId, d);
+    probeStage("find-mailbox-folder");
     auto folder = mailboxFolderId(d.content.Get(), box);
     auto props = make<IPortableDeviceValues>(CLSID_PortableDeviceValues);
     checked(props->SetStringValue(WPD_OBJECT_PARENT_ID, folder.c_str()));
@@ -364,19 +405,22 @@ void mailboxWrite(PCWSTR deviceId, const std::wstring& box, const std::wstring& 
     checked(props->SetGuidValue(WPD_OBJECT_FORMAT, WPD_OBJECT_FORMAT_UNSPECIFIED));
     ComPtr<IStream> output;
     DWORD optimal = 0;
+    probeStage("create-message-object");
     checked(d.content->CreateObjectWithPropertiesAndData(props.Get(), &output, &optimal, nullptr));
     try {
         size_t offset = 0;
         while (offset < bytes.size()) {
             ULONG written = 0;
             ULONG requested = static_cast<ULONG>((std::min)(bytes.size() - offset, size_t(65536)));
+            probeStage("write-message-stream");
             checked(output->Write(bytes.data() + offset, requested, &written));
             if (!written || written > requested) throw std::runtime_error("Incomplete write");
             offset += written;
         }
+        probeStage("commit-message-stream");
         checked(output->Commit(STGC_DEFAULT));
     } catch (...) {
-        output->Revert(); // a partial file fails authentication on the phone and is discarded there
+        output->Revert(); // best effort; the phone ignores invalid envelopes for 30 seconds
         throw;
     }
     LocalOutput() << L"mailbox-written=1\n";
@@ -493,6 +537,9 @@ int wmain(int argc, wchar_t** argv) {
     int result = 0;
     try {
         std::wstring command = argv[1];
+        WCHAR traceFlag[2] = {};
+        probeTracing = (command == L"devices" || command.rfind(L"mailbox-", 0) == 0) &&
+            GetEnvironmentVariableW(L"EVERYARTICLE_PROBE_TRACE", traceFlag, 2) == 1 && traceFlag[0] == L'1';
         if ((command == L"protect" || command == L"unprotect") && argc == 2) protectPipe(command == L"protect");
         else if (command == L"self-test" && argc == 2) selfTest();
         else if (command == L"devices" && argc == 2) devices();
