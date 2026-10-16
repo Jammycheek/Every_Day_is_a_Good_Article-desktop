@@ -1,6 +1,6 @@
 # Hardware validation procedure: one-edit round trip (synthetic data only)
 
-Nothing in this document has been executed on hardware yet. Record results only after running them; never mark a
+Partial hardware results are recorded in [SYNC-HARDWARE-RESULTS.md](SYNC-HARDWARE-RESULTS.md). This file is a procedure, not a pass report. Record results only after running them; never mark a
 step passed from automated tests. Use a separate validation build of the phone app (separate application ID) and
 synthetic data only. Do not use the E: drive; the desktop app stores its data under `%LOCALAPPDATA%\EveryArticleDesktop`.
 
@@ -13,7 +13,7 @@ synthetic data only. Do not use the E: drive; the desktop app stores its data un
    3 synthetic articles (short text, one with a title). No real data, no photos needed.
 3. Phone: in internal storage, create a folder `EveryArticleSync` at the top level (Files app or the folder picker).
 4. Phone: Settings → Link with PC → Choose folder → select `EveryArticleSync`. Keep this screen open during tests.
-5. Connect USB, unlock the phone, choose **File transfer**. Do not change accounts, passwords or power.
+5. Connect USB, unlock the phone, choose **File transfer**. Do not change accounts, passwords or power. Use an isolated PC validation data directory; the storage-corruption steps below must never target the normal application data.
 
 ## Steps and expected results
 
@@ -21,7 +21,7 @@ synthetic data only. Do not use the E: drive; the desktop app stores its data un
 | --- | --- | --- |
 | 1 | Phone: Start pairing. PC: Start pairing | Both show the same 6 digits |
 | 2 | Confirm on both | Both list the other as paired; no key/ID printed in logs |
-| 3 | PC: Connect and import | PC lists the 3 synthetic articles; phone shows "PC is editing", other screens show the lock overlay |
+| 3 | PC: Connect and import | PC lists the configured synthetic articles (six in the recorded run); phone shows "PC is editing", other screens show the lock overlay |
 | 4 | Phone (other screen): try to edit/save an article | Blocked by overlay; if reached, save is refused and the draft is kept |
 | 5 | PC: edit one article body, wait 2 s, submit | PC shows "applied (revision N)"; phone article shows the new text; lock released |
 | 6 | Repeat 3, edit, then unplug USB before submitting | PC: session ended, snapshot cleared, pending shown as protected; phone: lock ends at expiry without the PC |

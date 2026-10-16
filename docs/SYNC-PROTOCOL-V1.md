@@ -1,7 +1,7 @@
 # Sync protocol v1: phone ⇄ PC one-edit round trip
 
 Status: implemented for synthetic data (public `protocol/`, `desktop-core/`, `desktop/`), with a private Android
-adapter in a separate repository. Not validated on hardware yet; see [SYNC-HARDWARE-VALIDATION.md](SYNC-HARDWARE-VALIDATION.md).
+adapter in a separate repository. Partially validated with synthetic data; see [SYNC-HARDWARE-RESULTS.md](SYNC-HARDWARE-RESULTS.md) and the remaining [hardware procedure](SYNC-HARDWARE-VALIDATION.md).
 This document is the public, platform-neutral contract. It contains no Android source or application data.
 
 ## 1. Principles
@@ -185,3 +185,8 @@ Decided with the owner: MTP file mailbox (no network permission on the phone), 6
 public pure-Kotlin protocol module vendored by the app at a pinned commit with checksums.
 Open: session/allowance durations from measurement; MTP visibility latency of SAF-written files; multi-article or
 photo edits; macOS/Linux mailbox and key-storage adapters; Android instrumentation tests of the Room adapter.
+
+
+Phone operation without the PC-link screen and a few-second handoff are requested follow-up work, not current
+capabilities. See [SESSION-HANDOFF-NEXT.md](SESSION-HANDOFF-NEXT.md). The present release is best-effort and
+has no processing acknowledgement; the present abrupt-disconnect fallback is phone-side lease expiry.
