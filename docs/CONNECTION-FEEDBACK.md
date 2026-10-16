@@ -125,3 +125,13 @@ Each run acquired and released a real synthetic edit grant, so normal verified h
 edit did not change and no article edit was submitted. Native CTest 2/2 passed. This provides evidence of recovery
 with the revised implementation; it does not prove how the underlying Windows/Android stack entered the bad state,
 nor establish behavior on other devices. UI import and editor-text restoration still require the user's view.
+
+## User-visible confirmation (2026-10-16)
+
+With the revised helper and UI running, the user confirmed that the editor opened, the previously protected
+appended text was restored, and the transition to the editor felt smooth. This completes the user-visible
+import/recovery check on this paired Windows PC and Pixel 7a using synthetic articles. The three driver timings
+above are measured; the UI responsiveness assessment is the user's observation, without a separate UI stopwatch.
+
+This confirmation does not establish the exact timing of the earlier immediate-end-edit test, USB-disconnect
+behavior for this build, sleep/power-loss handling, or behavior on another device. Those remain separate checks.
